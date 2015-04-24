@@ -25,6 +25,8 @@
 
 #include "proton/cpp/ProtonEvent.h"
 #include "proton/cpp/ProtonHandler.h"
+#include "proton/cpp/exceptions.h"
+#include "Msg.h"
 #include "contexts.h"
 
 namespace proton {
@@ -45,21 +47,21 @@ Container &ProtonEvent::getContainer() { return container; }
 Connection &ProtonEvent::getConnection() {
     Connection *conn = getConnectionContext(pn_event_connection(getPnEvent()));
     if (conn) return *conn;
-    throw "some real exception";
+    throw ProtonException(MSG("No connection context for this event"));
 }
 
 Sender ProtonEvent::getSender() {
     pn_link_t *lnk = pn_event_link(getPnEvent());
     if (lnk && pn_link_is_sender(lnk))
         return Sender(lnk);
-    throw "some real exception";
+    throw ProtonException(MSG("No sender context for this event"));
 }
 
 Receiver ProtonEvent::getReceiver() {
     pn_link_t *lnk = pn_event_link(getPnEvent());
     if (lnk && pn_link_is_receiver(lnk))
         return Receiver(lnk);
-    throw "some real exception";
+    throw ProtonException(MSG("No receiver context for this event"));
 }
 
 Link ProtonEvent::getLink() {
@@ -69,7 +71,7 @@ Link ProtonEvent::getLink() {
             return Sender(lnk);
         else
             return Receiver(lnk);
-    throw "some real exception";
+    throw ProtonException(MSG("No link context for this event"));
 }
 
 
@@ -129,7 +131,7 @@ void ProtonEvent::dispatch(Handler &h) {
         case PN_SELECTABLE_ERROR: handler->onSelectableError(*this); break;
         case PN_SELECTABLE_FINAL: handler->onSelectableFinal(*this); break;
         default:
-            // TODO: throw x
+            throw ProtonException(MSG("Invalid Proton event type " << type));
             break;
         }
     } else {
@@ -137,7 +139,7 @@ void ProtonEvent::dispatch(Handler &h) {
     }
 
     // recurse through children
-    for (std::vector<Handler *>::iterator child = h.childHandlersBegin(); 
+    for (std::vector<Handler *>::iterator child = h.childHandlersBegin();
          child != h.childHandlersEnd(); ++child) {
         dispatch(**child);
     }

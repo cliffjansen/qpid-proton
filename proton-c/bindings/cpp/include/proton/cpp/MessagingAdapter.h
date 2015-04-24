@@ -10,9 +10,9 @@
  * to you under the Apache License, Version 2.0 (the
  * "License"); you may not use this file except in compliance
  * with the License.  You may obtain a copy of the License at
- * 
+ *
  *   http://www.apache.org/licenses/LICENSE-2.0
- * 
+ *
  * Unless required by applicable law or agreed to in writing,
  * software distributed under the License is distributed on an
  * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
@@ -34,7 +34,6 @@ namespace cpp {
 namespace reactor {
 
 // For now, stands in for Python's: EndpointStateHandler, IncomingMessageHandler, OutgoingMessageHandler
-// Radical change expected, but mostly invisible to applications.        
 
 
 class MessagingAdapter : public ProtonHandler
@@ -46,6 +45,8 @@ class MessagingAdapter : public ProtonHandler
     PROTON_CPP_EXTERN virtual void onLinkFlow(Event &e);
     PROTON_CPP_EXTERN virtual void onDelivery(Event &e);
     PROTON_CPP_EXTERN virtual void onUnhandled(Event &e);
+    PROTON_CPP_EXTERN virtual void onConnectionRemoteClose(Event &e);
+    PROTON_CPP_EXTERN virtual void onLinkRemoteOpen(Event &e);
   private:
     MessagingHandler &delegate;  // The actual MessagingHandler
     pn_handler_t *handshaker;

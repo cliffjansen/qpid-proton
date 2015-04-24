@@ -18,45 +18,40 @@
  * under the License.
  *
  */
-#include "proton/cpp/Link.h"
-#include "proton/cpp/Sender.h"
-#include "contexts.h"
 
-#include "proton/connection.h"
-#include "proton/session.h"
-#include "proton/link.h"
-#include "proton/types.h"
-#include "proton/codec.h"
-#include "proton/message.h"
-#include "proton/delivery.h"
-#include <stdlib.h>
-#include <string.h>
+#include "LogInternal.h"
+#include <cstdlib>
 
 namespace proton {
 namespace cpp {
 namespace reactor {
 
-
-Sender::Sender(pn_link_t *lnk) : Link(lnk, true) {}
-
-namespace{
-// revisit if thread safety required
-uint64_t tagCounter = 0;
+namespace {
+bool levelSet = false;
+Level logLevel = error;
+Level getLogLevel() {
+    if (!levelSet) {
+        levelSet = true;
+        const char *l = getenv("PROTON_CPP_LOG_LEVEL");
+        if (l && l[0] != 0 && l[1] == 0) {
+            char low = '0' + trace;
+            char high = '0' + critical;
+            if (*l >= low && *l <= high)
+                logLevel = (Level) (*l - '0');
+        }
+    }
+    return logLevel;
 }
 
-void Sender::send(Message &message) {
-    char tag[8];
-    void *ptr = &tag;
-    uint64_t id = ++tagCounter;
-    *((uint64_t *) ptr) = id;
-    pn_delivery_t *dlv = pn_delivery(getPnLink(), pn_dtag(tag, 8));
-    std::string buf;
-    message.encode(buf);
-    pn_link_t *link = getPnLink();
-    pn_link_send(link, buf.data(), buf.size());
-    pn_link_advance(link);
-    if (pn_link_snd_settle_mode(link) == PN_SND_SETTLED)
-        pn_delivery_settle(dlv);
+} // namespace
+
+
+void Logger::log(Level level, const char* file, int line, const char* function, const std::string& message)
+{
+    if (level >= getLogLevel()) {
+        std::cout << message << std::endl;
+        std::cout.flush();
+    }
 }
 
 }}} // namespace proton::cpp::reactor

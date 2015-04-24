@@ -1,5 +1,5 @@
-#ifndef PROTON_CPP_CONNECTION_H
-#define PROTON_CPP_CONNECTION_H
+#ifndef PROTON_CPP_ACCEPTOR_H
+#define PROTON_CPP_ACCEPTOR_H
 
 /*
  *
@@ -22,9 +22,7 @@
  *
  */
 #include "proton/cpp/ImportExport.h"
-#include "proton/cpp/Endpoint.h"
-#include "proton/types.h"
-#include <string>
+#include "proton/reactor.h"
 
 struct pn_connection_t;
 
@@ -32,35 +30,20 @@ namespace proton {
 namespace cpp {
 namespace reactor {
 
-class Container;
-class Handler;
-class Transport;
-
-class Connection : public Endpoint
+class Acceptor
 {
   public:
-    PROTON_CPP_EXTERN Connection(Container &c);
-    PROTON_CPP_EXTERN ~Connection();
-    PROTON_CPP_EXTERN Transport &getTransport();
-    PROTON_CPP_EXTERN Handler *getOverride();
-    PROTON_CPP_EXTERN void setOverride(Handler *h);
-    PROTON_CPP_EXTERN void open();
+    PROTON_CPP_EXTERN Acceptor();
+    PROTON_CPP_EXTERN Acceptor(pn_acceptor_t *);
+    PROTON_CPP_EXTERN ~Acceptor();
     PROTON_CPP_EXTERN void close();
-    PROTON_CPP_EXTERN pn_connection_t *getPnConnection();
-    PROTON_CPP_EXTERN Container &getContainer();
-    PROTON_CPP_EXTERN std::string getHostname();
-    virtual PROTON_CPP_EXTERN Connection &getConnection();
+    PROTON_CPP_EXTERN Acceptor(const Acceptor&);
+    PROTON_CPP_EXTERN Acceptor& operator=(const Acceptor&);
   private:
-    friend class Connector;
-    friend class Container;
-    Container &container;
-    Handler *override;
-    Transport *transport;
-    pn_session_t *defaultSession;  // Temporary, for SessionPerConnection style policy
-    pn_connection_t *pnConnection;
+    pn_acceptor_t *pnAcceptor;
 };
 
 
 }}} // namespace proton::cpp::reactor
 
-#endif  /*!PROTON_CPP_CONNECTION_H*/
+#endif  /*!PROTON_CPP_ACCEPTOR_H*/

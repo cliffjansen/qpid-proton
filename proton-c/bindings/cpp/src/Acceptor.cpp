@@ -18,45 +18,43 @@
  * under the License.
  *
  */
-#include "proton/cpp/Link.h"
-#include "proton/cpp/Sender.h"
-#include "contexts.h"
 
-#include "proton/connection.h"
-#include "proton/session.h"
-#include "proton/link.h"
-#include "proton/types.h"
-#include "proton/codec.h"
-#include "proton/message.h"
-#include "proton/delivery.h"
-#include <stdlib.h>
-#include <string.h>
+#include "proton/cpp/Acceptor.h"
+#include "proton/cpp/exceptions.h"
+#include "Msg.h"
 
 namespace proton {
 namespace cpp {
 namespace reactor {
 
+Acceptor::Acceptor() : pnAcceptor(0) {}
 
-Sender::Sender(pn_link_t *lnk) : Link(lnk, true) {}
-
-namespace{
-// revisit if thread safety required
-uint64_t tagCounter = 0;
+Acceptor::Acceptor(pn_acceptor_t *a) : pnAcceptor(a)
+{
+    if (!pnAcceptor) throw ProtonException(MSG("NULL Proton acceptor object"));
+    pn_incref(pnAcceptor);
 }
 
-void Sender::send(Message &message) {
-    char tag[8];
-    void *ptr = &tag;
-    uint64_t id = ++tagCounter;
-    *((uint64_t *) ptr) = id;
-    pn_delivery_t *dlv = pn_delivery(getPnLink(), pn_dtag(tag, 8));
-    std::string buf;
-    message.encode(buf);
-    pn_link_t *link = getPnLink();
-    pn_link_send(link, buf.data(), buf.size());
-    pn_link_advance(link);
-    if (pn_link_snd_settle_mode(link) == PN_SND_SETTLED)
-        pn_delivery_settle(dlv);
+Acceptor::~Acceptor() {
+    if (pnAcceptor)
+        pn_decref(pnAcceptor);
+}
+
+Acceptor::Acceptor(const Acceptor& l) : pnAcceptor(l.pnAcceptor) {
+    if (pnAcceptor)
+        pn_incref(pnAcceptor);
+}
+
+Acceptor& Acceptor::operator=(const Acceptor& l) {
+    pnAcceptor = l.pnAcceptor;
+    if (pnAcceptor)
+        pn_incref(pnAcceptor);
+    return *this;
+}
+
+void Acceptor::close() {
+    if (pnAcceptor)
+        pn_acceptor_close(pnAcceptor);
 }
 
 }}} // namespace proton::cpp::reactor

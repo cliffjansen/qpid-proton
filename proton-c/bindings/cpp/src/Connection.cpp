@@ -21,6 +21,8 @@
 #include "proton/cpp/Container.h"
 #include "proton/cpp/Connection.h"
 #include "proton/cpp/Handler.h"
+#include "proton/cpp/exceptions.h"
+#include "Msg.h"
 #include "contexts.h"
 
 #include "proton/connection.h"
@@ -41,7 +43,7 @@ Connection::~Connection(){}
 Transport &Connection::getTransport() {
     if (transport)
         return *transport;
-    throw "TODO: real no transport exception here";
+    throw ProtonException(MSG("Connection has no transport"));
 }
 
 Handler* Connection::getOverride() { return override; }
@@ -57,12 +59,16 @@ void Connection::close() {
 
 pn_connection_t *Connection::getPnConnection() { return pnConnection; }
 
-std::string Connection::getHostname() { 
+std::string Connection::getHostname() {
     return std::string(pn_connection_get_hostname(pnConnection));
 }
 
 Connection &Connection::getConnection() {
     return (*this);
+}
+
+Container &Connection::getContainer() {
+    return (container);
 }
 
 }}} // namespace proton::cpp::reactor

@@ -19,54 +19,58 @@
  *
  */
 
-#include "proton/reactor.h"
-#include "proton/event.h"
-
-#include "proton/cpp/Event.h"
-#include "proton/cpp/Handler.h"
+#include "Url.h"
 #include "proton/cpp/exceptions.h"
-
 #include "Msg.h"
-#include "contexts.h"
 
 namespace proton {
 namespace cpp {
 namespace reactor {
 
-Event::Event() {}
-
-Event::~Event() {}
-
-
-Container &Event::getContainer() {
-    // Subclasses to override as appropriate
-    throw ProtonException(MSG("No container context for event"));
+Url::Url(const std::string &url) : pnUrl(pn_url_parse(url.c_str()))
+{
+    if (!pnUrl)
+        throw ProtonException(MSG("invalid URL: " << url));
+    pn_incref(pnUrl);
 }
 
-Connection &Event::getConnection() {
-    throw ProtonException(MSG("No connection context for Event"));
+Url::~Url() {
+    pn_decref(pnUrl);
 }
 
-Sender Event::getSender() {
-    throw ProtonException(MSG("No Sender context for event"));
+Url::Url(const Url& l) : pnUrl(l.pnUrl) {
+    pn_incref(pnUrl);
 }
 
-Receiver Event::getReceiver() {
-    throw ProtonException(MSG("No Receiver context for event"));
+Url& Url::operator=(const Url& l) {
+    pnUrl = l.pnUrl;
+    pn_incref(pnUrl);
+    return *this;
 }
 
-Link Event::getLink() {
-    throw ProtonException(MSG("No Link context for event"));
+std::string Url::getPort() {
+    const char *p = pn_url_get_port(pnUrl);
+    if (!p)
+        return std::string("5672");
+    else
+        return std::string(p);
 }
 
-Message Event::getMessage() {
-    throw ProtonException(MSG("No message associated with event"));
+std::string Url::getHost() {
+    const char *p = pn_url_get_host(pnUrl);
+    if (!p)
+        return std::string("0.0.0.0");
+    else
+        return std::string(p);
 }
 
-void Event::setMessage(Message &) {
-    throw ProtonException(MSG("Operation not supported for this type of event"));
+std::string Url::getPath() {
+    const char *p = pn_url_get_path(pnUrl);
+    if (!p)
+        return std::string("");
+    else
+        return std::string(p);
 }
-
 
 
 }}} // namespace proton::cpp::reactor

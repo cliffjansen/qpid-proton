@@ -19,10 +19,14 @@
  *
  */
 
-#include "Connector.h"
 #include "proton/cpp/Connection.h"
 #include "proton/cpp/Transport.h"
+#include "proton/cpp/Container.h"
+#include "proton/cpp/Event.h"
 #include "proton/connection.h"
+#include "Connector.h"
+#include "Url.h"
+#include "LogInternal.h"
 
 namespace proton {
 namespace cpp {
@@ -37,8 +41,12 @@ void Connector::setAddress(const std::string &a) {
 }
 
 void Connector::connect() {
-    // TODO: log("connecting to %s..." % connection.hostname)
-    pn_connection_set_hostname(connection.getPnConnection(), address.c_str());
+    pn_connection_t *conn = connection.getPnConnection();
+    pn_connection_set_container(conn, connection.getContainer().getContainerId().c_str());
+    Url url(address);
+    std::string hostname = url.getHost() + ":" + url.getPort();
+    pn_connection_set_hostname(conn, hostname.c_str());
+    PN_CPP_LOG(info, "connecting to " << hostname << "...");
     transport = new Transport();
     transport->bind(connection);
     connection.transport = transport;
@@ -50,7 +58,7 @@ void Connector::onConnectionLocalOpen(Event &e) {
 }
 
 void Connector::onConnectionRemoteOpen(Event &e) {
-    // log("connected to %s\n", the_target)
+    PN_CPP_LOG(info, "connected to " << e.getConnection().getHostname());
 }
 
 void Connector::onConnectionInit(Event &e) {

@@ -1,3 +1,6 @@
+#ifndef PROTON_CPP_PLATFORM_H
+#define PROTON_CPP_PLATFORM_H
+
 /*
  *
  * Licensed to the Apache Software Foundation (ASF) under one
@@ -18,45 +21,20 @@
  * under the License.
  *
  */
-#include "proton/cpp/Link.h"
-#include "proton/cpp/Sender.h"
-#include "contexts.h"
 
-#include "proton/connection.h"
-#include "proton/session.h"
-#include "proton/link.h"
-#include "proton/types.h"
-#include "proton/codec.h"
-#include "proton/message.h"
-#include "proton/delivery.h"
-#include <stdlib.h>
-#include <string.h>
+#include "proton/cpp/ProtonHandler.h"
+#include "proton/event.h"
+#include "proton/reactor.h"
+#include <string>
+
 
 namespace proton {
 namespace cpp {
 namespace reactor {
 
-
-Sender::Sender(pn_link_t *lnk) : Link(lnk, true) {}
-
-namespace{
-// revisit if thread safety required
-uint64_t tagCounter = 0;
-}
-
-void Sender::send(Message &message) {
-    char tag[8];
-    void *ptr = &tag;
-    uint64_t id = ++tagCounter;
-    *((uint64_t *) ptr) = id;
-    pn_delivery_t *dlv = pn_delivery(getPnLink(), pn_dtag(tag, 8));
-    std::string buf;
-    message.encode(buf);
-    pn_link_t *link = getPnLink();
-    pn_link_send(link, buf.data(), buf.size());
-    pn_link_advance(link);
-    if (pn_link_snd_settle_mode(link) == PN_SND_SETTLED)
-        pn_delivery_settle(dlv);
-}
+std::string generateUuid();
+// Todo: TimeNow();
 
 }}} // namespace proton::cpp::reactor
+
+#endif  /*!PROTON_CPP_PLATFORM_H*/

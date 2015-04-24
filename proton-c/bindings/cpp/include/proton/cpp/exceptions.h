@@ -1,3 +1,6 @@
+#ifndef PROTON_CPP_EXCEPTIONS_H
+#define PROTON_CPP_EXCEPTIONS_H
+
 /*
  *
  * Licensed to the Apache Software Foundation (ASF) under one
@@ -18,45 +21,37 @@
  * under the License.
  *
  */
-#include "proton/cpp/Link.h"
-#include "proton/cpp/Sender.h"
-#include "contexts.h"
-
-#include "proton/connection.h"
-#include "proton/session.h"
-#include "proton/link.h"
-#include "proton/types.h"
-#include "proton/codec.h"
-#include "proton/message.h"
-#include "proton/delivery.h"
-#include <stdlib.h>
-#include <string.h>
+#include "proton/cpp/ImportExport.h"
+#include <string>
+#include <exception>
 
 namespace proton {
 namespace cpp {
 namespace reactor {
 
+class ProtonException : public std::exception
+{
+  public:
+    PROTON_CPP_EXTERN explicit ProtonException(const std::string& message=std::string()) throw();
+    PROTON_CPP_EXTERN virtual ~ProtonException() throw();
+    PROTON_CPP_EXTERN virtual const char* what() const throw();
 
-Sender::Sender(pn_link_t *lnk) : Link(lnk, true) {}
+  private:
+    const std::string message;
+};
 
-namespace{
-// revisit if thread safety required
-uint64_t tagCounter = 0;
-}
+class MessageReject : public ProtonException
+{
+  public:
+    PROTON_CPP_EXTERN explicit MessageReject(const std::string& message=std::string()) throw();
+};
 
-void Sender::send(Message &message) {
-    char tag[8];
-    void *ptr = &tag;
-    uint64_t id = ++tagCounter;
-    *((uint64_t *) ptr) = id;
-    pn_delivery_t *dlv = pn_delivery(getPnLink(), pn_dtag(tag, 8));
-    std::string buf;
-    message.encode(buf);
-    pn_link_t *link = getPnLink();
-    pn_link_send(link, buf.data(), buf.size());
-    pn_link_advance(link);
-    if (pn_link_snd_settle_mode(link) == PN_SND_SETTLED)
-        pn_delivery_settle(dlv);
-}
+class MessageRelease : public ProtonException
+{
+  public:
+    PROTON_CPP_EXTERN explicit MessageRelease(const std::string& message=std::string()) throw();
+};
 
 }}} // namespace proton::cpp::reactor
+
+#endif  /*!PROTON_CPP_EXCEPTIONS_H*/

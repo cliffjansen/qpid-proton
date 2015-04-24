@@ -21,10 +21,13 @@
 #include "proton/cpp/MessagingAdapter.h"
 #include "proton/cpp/MessagingEvent.h"
 #include "proton/cpp/Sender.h"
+#include "proton/cpp/exceptions.h"
+#include "Msg.h"
 
 #include "proton/link.h"
 #include "proton/handlers.h"
 #include "proton/delivery.h"
+#include "proton/connection.h"
 
 namespace proton {
 namespace cpp {
@@ -65,7 +68,7 @@ Message receiveMessage(pn_link_t *lnk, pn_delivery_t *dlv) {
     buf.resize(sz);
     ssize_t n = pn_link_recv(lnk, (char *) buf.data(), sz);
     if (n != (ssize_t) sz)
-        throw "link read failure";
+        throw ProtonException(MSG("link read failure"));
     Message m;
     m. decode(buf);
     pn_link_advance(lnk);
@@ -94,7 +97,79 @@ void MessagingAdapter::onDelivery(Event &e) {
                 // TODO: generate onSettled
             }
         } else {
-            // Sender link
+            // Sender
+            if (pn_delivery_updated(dlv)) {
+                uint64_t rstate = pn_delivery_remote_state(dlv);
+                if (rstate == PN_ACCEPTED)
+                    // generate onAccepted
+                    MessagingEvent(PN_MESSAGING_ACCEPTED, pe, pe->getContainer()).dispatch(delegate);
+                else if (rstate = PN_REJECTED)
+                    MessagingEvent(PN_MESSAGING_REJECTED, pe, pe->getContainer()).dispatch(delegate);
+                else if (rstate == PN_RELEASED || rstate == PN_MODIFIED)
+                    MessagingEvent(PN_MESSAGING_RELEASED, pe, pe->getContainer()).dispatch(delegate);
+
+                if (pn_delivery_settled(dlv))
+                    MessagingEvent(PN_MESSAGING_SETTLED, pe, pe->getContainer()).dispatch(delegate);
+
+                pn_delivery_settle(dlv); // TODO: only if auto settled
+            }
+        }
+    }
+}
+
+namespace {
+
+bool isLocalOpen(pn_state_t state) {
+    return state & PN_LOCAL_ACTIVE;
+}
+
+bool isLocalUnititialised(pn_state_t state) {
+    return state & PN_LOCAL_UNINIT;
+}
+
+bool isLocalClosed(pn_state_t state) {
+    return state & PN_LOCAL_CLOSED;
+}
+
+bool isRemoteOpen(pn_state_t state) {
+    return state & PN_REMOTE_ACTIVE;
+}
+
+bool isRemoteClosed(pn_state_t state) {
+    return state & PN_REMOTE_CLOSED;
+}
+
+} // namespace
+
+void MessagingAdapter::onConnectionRemoteClose(Event &e) {
+    ProtonEvent *pe = dynamic_cast<ProtonEvent*>(&e);
+    if (pe) {
+        pn_event_t *cevent = pe->getPnEvent();
+        pn_connection_t *conn = pn_event_connection(cevent);
+        // TODO: remote condition -> error
+        if (isLocalClosed(pn_connection_state(conn))) {
+            MessagingEvent(PN_MESSAGING_CONNECTION_CLOSED, pe, pe->getContainer()).dispatch(delegate);
+        }
+        else {
+            MessagingEvent(PN_MESSAGING_CONNECTION_CLOSING, pe, pe->getContainer()).dispatch(delegate);
+        }
+        pn_connection_close(conn);
+    }
+}
+
+
+void MessagingAdapter::onLinkRemoteOpen(Event &e) {
+    ProtonEvent *pe = dynamic_cast<ProtonEvent*>(&e);
+    if (pe) {
+        pn_event_t *cevent = pe->getPnEvent();
+        pn_link_t *link = pn_event_link(cevent);
+        // TODO: remote condition -> error
+        if (isLocalOpen(pn_link_state(link))) {
+            MessagingEvent(PN_MESSAGING_LINK_OPENED, pe, pe->getContainer()).dispatch(delegate);
+        }
+        else if (isLocalUnititialised(pn_link_state(link))) {
+            MessagingEvent(PN_MESSAGING_LINK_OPENING, pe, pe->getContainer()).dispatch(delegate);
+            pn_link_open(link);
         }
     }
 }
@@ -105,7 +180,7 @@ void MessagingAdapter::onUnhandled(Event &e) {
 
     ProtonEvent *pe = dynamic_cast<ProtonEvent*>(&e);
     if (pe) {
-        pn_event_type_t type = (pn_event_type_t) pe->getType(); 
+        pn_event_type_t type = (pn_event_type_t) pe->getType();
         if (type != PN_EVENT_NONE) {
             pn_handler_dispatch(handshaker, pe->getPnEvent(), type);
         }

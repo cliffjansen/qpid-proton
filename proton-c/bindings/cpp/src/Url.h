@@ -1,5 +1,5 @@
-#ifndef PROTON_CPP_ENDPOINT_H
-#define PROTON_CPP_ENDPOINT_H
+#ifndef PROTON_CPP_URL_H
+#define PROTON_CPP_URL_H
 
 /*
  *
@@ -22,27 +22,31 @@
  *
  */
 #include "proton/cpp/ImportExport.h"
+#include "proton/url.h"
+#include <string>
 
 namespace proton {
 namespace cpp {
 namespace reactor {
 
-class Handler;
-class Connection;
-class Transport;
-
-class Endpoint
+class Url
 {
   public:
-    // TODO: getCondition, getRemoteCondition, updateCondition, get/setHandler
-    virtual PROTON_CPP_EXTERN Connection &getConnection() = 0;
-    Transport PROTON_CPP_EXTERN &getTransport();
-  protected:
-    Endpoint();
-    ~Endpoint();
+    PROTON_CPP_EXTERN Url(const std::string &url);
+    PROTON_CPP_EXTERN ~Url();
+    PROTON_CPP_EXTERN Url(const Url&);
+    PROTON_CPP_EXTERN Url& operator=(const Url&);
+    PROTON_CPP_EXTERN std::string getHost();
+    PROTON_CPP_EXTERN std::string getPort();
+    PROTON_CPP_EXTERN std::string getPath();
+  private:
+    pn_url_t *pnUrl;
 };
 
 
 }}} // namespace proton::cpp::reactor
 
-#endif  /*!PROTON_CPP_ENDPOINT_H*/
+#include "proton/cpp/Sender.h"
+#include "proton/cpp/Receiver.h"
+
+#endif  /*!PROTON_CPP_URL_H*/

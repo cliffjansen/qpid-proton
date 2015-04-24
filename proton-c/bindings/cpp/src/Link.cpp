@@ -19,6 +19,8 @@
  *
  */
 #include "proton/cpp/Link.h"
+#include "proton/cpp/exceptions.h"
+#include "Msg.h"
 #include "contexts.h"
 
 #include "proton/connection.h"
@@ -33,9 +35,9 @@ namespace reactor {
 Link::Link(pn_link_t *lnk, bool isSenderLink) : pnLink(lnk), senderLink(isSenderLink)
 {
     if (!lnk)
-        throw "TODO: some exception";
+        throw ProtonException(MSG("No link specified"));
     if (isSenderLink != pn_link_is_sender(lnk))
-        throw "TODO: exception for wrong link type";
+        throw ProtonException(MSG("wrong link type"));
     pn_incref(pnLink);
 }
 
@@ -43,7 +45,7 @@ Link::~Link() {
     pn_decref(pnLink);
 }
 
-    Link::Link(const Link& l) : pnLink(l.pnLink), senderLink(l.senderLink) {
+Link::Link(const Link& l) : pnLink(l.pnLink), senderLink(l.senderLink) {
     pn_incref(pnLink);
 }
 

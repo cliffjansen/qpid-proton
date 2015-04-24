@@ -28,8 +28,34 @@ namespace reactor {
 MessagingHandler::MessagingHandler(){};
 MessagingHandler::~MessagingHandler(){};
 
-void MessagingHandler::onStart(Event &e) { onUnhandled(e); }
-void MessagingHandler::onSendable(Event &e) { onUnhandled(e); }
+void MessagingHandler::onAbort(Event &e) { onUnhandled(e); }
+void MessagingHandler::onAccepted(Event &e) { onUnhandled(e); }
+void MessagingHandler::onCommit(Event &e) { onUnhandled(e); }
+void MessagingHandler::onConnectionClose(Event &e) { onUnhandled(e); }
+void MessagingHandler::onConnectionClosed(Event &e) { onUnhandled(e); }
+void MessagingHandler::onConnectionClosing(Event &e) { onUnhandled(e); }
+void MessagingHandler::onConnectionOpen(Event &e) { onUnhandled(e); }
+void MessagingHandler::onConnectionOpened(Event &e) { onUnhandled(e); }
+void MessagingHandler::onDisconnected(Event &e) { onUnhandled(e); }
+void MessagingHandler::onFetch(Event &e) { onUnhandled(e); }
+void MessagingHandler::onIdLoaded(Event &e) { onUnhandled(e); }
+void MessagingHandler::onLinkClosing(Event &e) { onUnhandled(e); }
+void MessagingHandler::onLinkOpened(Event &e) { onUnhandled(e); }
+void MessagingHandler::onLinkOpening(Event &e) { onUnhandled(e); }
 void MessagingHandler::onMessage(Event &e) { onUnhandled(e); }
+void MessagingHandler::onQuit(Event &e) { onUnhandled(e); }
+void MessagingHandler::onRecordInserted(Event &e) { onUnhandled(e); }
+void MessagingHandler::onRecordsLoaded(Event &e) { onUnhandled(e); }
+void MessagingHandler::onRejected(Event &e) { onUnhandled(e); }
+void MessagingHandler::onReleased(Event &e) { onUnhandled(e); }
+void MessagingHandler::onRequest(Event &e) { onUnhandled(e); }
+void MessagingHandler::onResponse(Event &e) { onUnhandled(e); }
+void MessagingHandler::onSendable(Event &e) { onUnhandled(e); }
+void MessagingHandler::onSettled(Event &e) { onUnhandled(e); }
+void MessagingHandler::onStart(Event &e) { onUnhandled(e); }
+void MessagingHandler::onTimer(Event &e) { onUnhandled(e); }
+void MessagingHandler::onTransactionAborted(Event &e) { onUnhandled(e); }
+void MessagingHandler::onTransactionCommitted(Event &e) { onUnhandled(e); }
+void MessagingHandler::onTransactionDeclared(Event &e) { onUnhandled(e); }
 
 }}} // namespace proton::cpp::reactor

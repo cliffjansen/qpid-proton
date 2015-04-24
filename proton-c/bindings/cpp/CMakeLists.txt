@@ -23,7 +23,7 @@ include_directories ("${CMAKE_CURRENT_SOURCE_DIR}/src")
 include_directories ("${CMAKE_CURRENT_SOURCE_DIR}/include")
 
 set (qpid-proton-cpp-platform
-  ""
+  "src/platform"
   )
 
 set (qpid-proton-cpp-core
@@ -31,12 +31,12 @@ set (qpid-proton-cpp-core
     src/Connector.cpp
     src/Connector.h
     src/Container.cpp
-    src/contexts.cpp
-    src/contexts.h
     src/Endpoint.cpp
     src/Event.cpp
     src/Handler.cpp
     src/Link.cpp
+    src/Acceptor.cpp
+    src/Url.cpp
     src/Message.cpp
     src/MessagingAdapter.cpp
     src/MessagingEvent.cpp
@@ -47,6 +47,9 @@ set (qpid-proton-cpp-core
     src/Sender.cpp
     src/Session.cpp
     src/Transport.cpp
+    src/Logger.cpp
+    src/contexts.cpp
+    src/exceptions.cpp
   )
 
 #set_source_files_properties (
@@ -59,14 +62,17 @@ set_source_files_properties (${qpid-proton-cpp-platform} PROPERTIES LANGUAGE CXX
 set_source_files_properties (
   ${qpid-proton-cpp-platform}
   PROPERTIES
-  COMPILE_FLAGS "${COMPILE_WARNING_FLAGS} ${COMPILE_PLATFORM_FLAGS}"
+  COMPILE_FLAGS "${COMPILE_PLATFORM_FLAGS}"
   COMPILE_DEFINITIONS "${PLATFORM_DEFINITIONS}"
   )
+
+
 
 add_library (
   qpid-proton-cpp SHARED
 
   ${qpid-proton-cpp-core}
+  ${qpid-proton-cpp-platform}
 
   )
 
@@ -83,6 +89,8 @@ set_target_properties (
 
 add_executable (HelloWorld examples/HelloWorld.cpp)
 target_link_libraries (HelloWorld qpid-proton-cpp)
+add_executable (HelloWorldDirect examples/HelloWorldDirect.cpp)
+target_link_libraries (HelloWorldDirect qpid-proton-cpp)
 
 install (TARGETS qpid-proton-cpp
   EXPORT  proton
@@ -92,11 +100,11 @@ install (TARGETS qpid-proton-cpp
 # Install windows qpid-proton-cpp pdb files
 if (MSVC)
   install(FILES ${CMAKE_CURRENT_BINARY_DIR}/Debug/qpid-proton${CMAKE_DEBUG_POSTFIX}.pdb
-    DESTINATION bin 
+    DESTINATION bin
     CONFIGURATIONS Debug
     OPTIONAL)
   install(FILES ${CMAKE_CURRENT_BINARY_DIR}/RelWithDebInfo/qpid-proton.pdb
-    DESTINATION bin 
+    DESTINATION bin
     CONFIGURATIONS RelWithDebInfo
     OPTIONAL)
 endif (MSVC)

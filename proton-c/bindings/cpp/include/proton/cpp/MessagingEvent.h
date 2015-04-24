@@ -10,9 +10,9 @@
  * to you under the Apache License, Version 2.0 (the
  * "License"); you may not use this file except in compliance
  * with the License.  You may obtain a copy of the License at
- * 
+ *
  *   http://www.apache.org/licenses/LICENSE-2.0
- * 
+ *
  * Unless required by applicable law or agreed to in writing,
  * software distributed under the License is distributed on an
  * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
@@ -35,9 +35,35 @@ class Connection;
 typedef enum {
     PN_MESSAGING_PROTON = 0,  // Wrapped pn_event_t
     // Covenience events for C++ MessagingHandlers
-    PN_MESSAGING_START,
+    PN_MESSAGING_ABORT,
+    PN_MESSAGING_ACCEPTED,
+    PN_MESSAGING_COMMIT,
+    PN_MESSAGING_CONNECTION_CLOSE,
+    PN_MESSAGING_CONNECTION_CLOSED,
+    PN_MESSAGING_CONNECTION_CLOSING,
+    PN_MESSAGING_CONNECTION_OPEN,
+    PN_MESSAGING_CONNECTION_OPENED,
+    PN_MESSAGING_DISCONNECTED,
+    PN_MESSAGING_FETCH,
+    PN_MESSAGING_ID_LOADED,
+    PN_MESSAGING_LINK_CLOSING,
+    PN_MESSAGING_LINK_OPENED,
+    PN_MESSAGING_LINK_OPENING,
+    PN_MESSAGING_MESSAGE,
+    PN_MESSAGING_QUIT,
+    PN_MESSAGING_RECORD_INSERTED,
+    PN_MESSAGING_RECORDS_LOADED,
+    PN_MESSAGING_REJECTED,
+    PN_MESSAGING_RELEASED,
+    PN_MESSAGING_REQUEST,
+    PN_MESSAGING_RESPONSE,
     PN_MESSAGING_SENDABLE,
-    PN_MESSAGING_MESSAGE
+    PN_MESSAGING_SETTLED,
+    PN_MESSAGING_START,
+    PN_MESSAGING_TIMER,
+    PN_MESSAGING_TRANSACTION_ABORTED,
+    PN_MESSAGING_TRANSACTION_COMMITTED,
+    PN_MESSAGING_TRANSACTION_DECLARED
 } MessagingEventType_t;
 
 class MessagingEvent : public ProtonEvent

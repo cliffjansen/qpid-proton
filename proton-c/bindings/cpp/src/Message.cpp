@@ -20,6 +20,8 @@
  */
 
 #include "proton/cpp/Message.h"
+#include "proton/cpp/exceptions.h"
+#include "Msg.h"
 
 namespace proton {
 namespace cpp {
@@ -48,16 +50,25 @@ void Message::setBody(const std::string &buf) {
 
 std::string Message::getBody() {
     pn_data_t *body = pn_message_body(pnMessage);
+    if (pn_data_next(body) && pn_data_type(body) == PN_STRING) {
+        pn_bytes_t bytes= pn_data_get_string(body);
+        if (!pn_data_next(body)) {
+            // String data and nothing else
+            return std::string(bytes.start, bytes.size);
+        }
+    }
+
+    pn_data_rewind(body);
     std::string str;
     size_t sz = 1024;
     str.resize(sz);
     int err = pn_data_format(body, (char *) str.data(), &sz);
     if (err == PN_OVERFLOW)
-        throw "TODO: size increase loop";
-    if (err) throw "unexpected error";
+        throw ProtonException(MSG("TODO: sizing loop missing"));
+    if (err) throw ProtonException(MSG("Unexpected data error"));
     str.resize(sz);
     return str;
-}    
+}
 
 void Message::encode(std::string &s) {
     size_t sz = 1024;
@@ -68,14 +79,14 @@ void Message::encode(std::string &s) {
     s.resize(sz);
     int err = pn_message_encode(pnMessage, (char *) s.data(), &sz);
     if (err == PN_OVERFLOW)
-        throw "TODO: size increase loop";
-    if (err) throw "unexpected error";
+        throw ProtonException(MSG("TODO: fix overflow with dynamic buffer resizing"));
+    if (err) throw ProtonException(MSG("unexpected error"));
     s.resize(sz);
 }
 
 void Message::decode(const std::string &s) {
     int err = pn_message_decode(pnMessage, s.data(), s.size());
-    if (err) throw "unexpected error";
+    if (err) throw ProtonException(MSG("unexpected error"));
 }
 
 

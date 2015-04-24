@@ -23,9 +23,15 @@
 #include "proton/cpp/Connection.h"
 #include "proton/cpp/Session.h"
 #include "proton/cpp/MessagingAdapter.h"
+#include "proton/cpp/Acceptor.h"
+#include "proton/cpp/exceptions.h"
+#include "LogInternal.h"
 
 #include "Connector.h"
 #include "contexts.h"
+#include "Url.h"
+#include "platform.h"
+
 #include "proton/connection.h"
 #include "proton/session.h"
 
@@ -53,7 +59,7 @@ void dispatch(Handler &h, MessagingEvent &e) {
     CHandler *chandler;
     int type = e.getType();
     if (type &&  (chandler = dynamic_cast<CHandler*>(&h))) {
-        // event and handler are both native Proton C 
+        // event and handler are both native Proton C
         pn_handler_dispatch(chandler->getPnHandler(), e.getPnEvent(), (pn_event_type_t) type);
     }
     else
@@ -73,7 +79,7 @@ class OverrideHandler : public Handler
         pn_decref(baseHandler);
     }
 
-    
+
     virtual void onUnhandled(Event &e) {
         ProtonEvent *pne = static_cast<ProtonEvent *>(&e);
         // If not a Proton reactor event, nothing to override, nothing to pass along.
@@ -144,11 +150,11 @@ pn_handler_t *cpp_handler(Container *c, Handler *h)
 
 
 Container::Container(MessagingHandler &mhandler) :
-    reactor(0), messagingHandler(mhandler) {
+    reactor(0), messagingHandler(mhandler), containerId(generateUuid()) {
 }
 
 Connection &Container::connect(std::string &host) {
-    if (!reactor) throw "Container not initialized";
+    if (!reactor) throw ProtonException(MSG("Container not initialized"));
     Connection *connection = new Connection(*this);
     Connector *connector = new Connector(*connection);
     connector->setAddress(host);  // TODO: url vector
@@ -161,20 +167,47 @@ pn_reactor_t *Container::getReactor() { return reactor; }
 
 pn_handler_t *Container::getGlobalHandler() { return globalHandler; }
 
-Sender Container::createSender(Connection &connection, std::string &addr) { 
+std::string Container::getContainerId() { return containerId; }
+
+
+Sender Container::createSender(Connection &connection, std::string &addr) {
     Session session = getDefaultSession(connection.pnConnection, &connection.defaultSession);
-    Sender snd = session.createSender(addr);
+    Sender snd = session.createSender(containerId  + '-' + addr);
     pn_terminus_set_address(pn_link_target(snd.getPnLink()), addr.c_str());
     snd.open();
     return snd;
 }
 
-Receiver Container::createReceiver(Connection &connection, std::string &addr) { 
+Sender Container::createSender(std::string &urlString) {
+    Connection conn = connect(urlString);
+    Session session = getDefaultSession(conn.pnConnection, &conn.defaultSession);
+    std::string path = Url(urlString).getPath();
+    Sender snd = session.createSender(containerId + '-' + path);
+    pn_terminus_set_address(pn_link_target(snd.getPnLink()), path.c_str());
+    snd.open();
+    return snd;
+}
+
+Receiver Container::createReceiver(Connection &connection, std::string &addr) {
     Session session = getDefaultSession(connection.pnConnection, &connection.defaultSession);
-    Receiver rcv = session.createReceiver(addr);
+    Receiver rcv = session.createReceiver(containerId + '-' + addr);
     pn_terminus_set_address(pn_link_source(rcv.getPnLink()), addr.c_str());
     rcv.open();
     return rcv;
+}
+
+Acceptor Container::acceptor(const std::string &host, const std::string &port) {
+    pn_acceptor_t *acptr = pn_reactor_acceptor(reactor, host.c_str(), port.c_str(), NULL);
+    if (acptr)
+        return Acceptor(acptr);
+    else
+        throw ProtonException(MSG("accept fail: " << pn_error_text(pn_io_error(pn_reactor_io(reactor))) << "(" << host << ":" << port << ")"));
+}
+
+Acceptor Container::listen(const std::string &urlString) {
+    Url url(urlString);
+    // TODO: SSL
+    return acceptor(url.getHost(), url.getPort());
 }
 
 

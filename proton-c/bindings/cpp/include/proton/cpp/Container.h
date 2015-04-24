@@ -10,9 +10,9 @@
  * to you under the Apache License, Version 2.0 (the
  * "License"); you may not use this file except in compliance
  * with the License.  You may obtain a copy of the License at
- * 
+ *
  *   http://www.apache.org/licenses/LICENSE-2.0
- * 
+ *
  * Unless required by applicable law or agreed to in writing,
  * software distributed under the License is distributed on an
  * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
@@ -36,6 +36,7 @@ namespace reactor {
 class DispatchHelper;
 class Connection;
 class Connector;
+class Acceptor;
 
 class Container
 {
@@ -46,13 +47,18 @@ class Container
     PROTON_CPP_EXTERN pn_reactor_t *getReactor();
     PROTON_CPP_EXTERN pn_handler_t *getGlobalHandler();
     PROTON_CPP_EXTERN Sender createSender(Connection &connection, std::string &addr);
+    PROTON_CPP_EXTERN Sender createSender(std::string &url);
     PROTON_CPP_EXTERN Receiver createReceiver(Connection &connection, std::string &addr);
+    PROTON_CPP_EXTERN Acceptor listen(const std::string &url);
+    PROTON_CPP_EXTERN std::string getContainerId();
   private:
     friend class DispatchHelper;
     pn_reactor_t *reactor;
     pn_handler_t *globalHandler;
-    PROTON_CPP_EXTERN void dispatch(pn_event_t *event, pn_event_type_t type);
+    void dispatch(pn_event_t *event, pn_event_type_t type);
+    Acceptor acceptor(const std::string &host, const std::string &port);
     MessagingHandler &messagingHandler;
+    std::string containerId;
 };
 
 
