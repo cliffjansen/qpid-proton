@@ -23,7 +23,6 @@
 #include <cstdlib>
 
 namespace proton {
-namespace cpp {
 namespace reactor {
 
 namespace {
@@ -54,4 +53,4 @@ void Logger::log(Level level, const char* file, int line, const char* function, 
     }
 }
 
-}}} // namespace proton::cpp::reactor
+}} // namespace proton::reactor

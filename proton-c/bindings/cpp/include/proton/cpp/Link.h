@@ -29,7 +29,6 @@
 struct pn_connection_t;
 
 namespace proton {
-namespace cpp {
 namespace reactor {
 
 class Link : public Endpoint
@@ -54,7 +53,7 @@ class Link : public Endpoint
 };
 
 
-}}} // namespace proton::cpp::reactor
+}} // namespace proton::reactor
 
 #include "proton/cpp/Sender.h"
 #include "proton/cpp/Receiver.h"

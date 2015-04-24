@@ -28,7 +28,6 @@
 #include "proton/link.h"
 
 namespace proton {
-namespace cpp {
 namespace reactor {
 
 
@@ -84,4 +83,4 @@ Connection &Link::getConnection() {
     return *getConnectionContext(c);
 }
 
-}}} // namespace proton::cpp::reactor
+}} // namespace proton::reactor

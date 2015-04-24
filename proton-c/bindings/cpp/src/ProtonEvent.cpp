@@ -30,7 +30,6 @@
 #include "contexts.h"
 
 namespace proton {
-namespace cpp {
 namespace reactor {
 
 ProtonEvent::ProtonEvent(pn_event_t *ce, pn_event_type_t t, Container &c) :
@@ -145,4 +144,4 @@ void ProtonEvent::dispatch(Handler &h) {
     }
 }
 
-}}} // namespace proton::cpp::reactor
+}} // namespace proton::reactor

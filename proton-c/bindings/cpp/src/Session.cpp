@@ -26,7 +26,6 @@
 #include "proton/cpp/Session.h"
 
 namespace proton {
-namespace cpp {
 namespace reactor {
 
 
@@ -60,4 +59,4 @@ Sender Session::createSender(std::string name) {
     return Sender(link);
 }
 
-}}} // namespace proton::cpp::reactor
+}} // namespace proton::reactor

@@ -30,7 +30,6 @@
 #include "contexts.h"
 
 namespace proton {
-namespace cpp {
 namespace reactor {
 
 Event::Event() {}
@@ -69,4 +68,4 @@ void Event::setMessage(Message &) {
 
 
 
-}}} // namespace proton::cpp::reactor
+}} // namespace proton::reactor

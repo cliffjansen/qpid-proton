@@ -22,7 +22,6 @@
 #include "proton/cpp/Event.h"
 
 namespace proton {
-namespace cpp {
 namespace reactor {
 
 Handler::Handler(){};
@@ -42,4 +41,4 @@ std::vector<Handler *>::iterator Handler::childHandlersEnd() {
     return childHandlers.end();
 }
 
-}}} // namespace proton::cpp::reactor
+}} // namespace proton::reactor

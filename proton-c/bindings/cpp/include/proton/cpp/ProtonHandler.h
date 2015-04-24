@@ -24,7 +24,6 @@
 #include "proton/cpp/Handler.h"
 
 namespace proton {
-namespace cpp {
 namespace reactor {
 
 class Event;
@@ -79,6 +78,6 @@ class ProtonHandler : public Handler
 };
 
 
-}}} // namespace proton::cpp::reactor
+}} // namespace proton::reactor
 
 #endif  /*!PROTON_CPP_PROTONHANDLER_H*/

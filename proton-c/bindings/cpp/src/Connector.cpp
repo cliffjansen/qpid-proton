@@ -29,7 +29,6 @@
 #include "LogInternal.h"
 
 namespace proton {
-namespace cpp {
 namespace reactor {
 
 Connector::Connector(Connection &c) : connection(c), transport(0) {}
@@ -70,4 +69,4 @@ void Connector::onTransportClosed(Event &e) {
 }
 
 
-}}} // namespace proton::cpp::reactor
+}} // namespace proton::reactor

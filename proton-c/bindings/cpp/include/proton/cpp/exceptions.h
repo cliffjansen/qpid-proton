@@ -26,7 +26,6 @@
 #include <exception>
 
 namespace proton {
-namespace cpp {
 namespace reactor {
 
 class ProtonException : public std::exception
@@ -52,6 +51,6 @@ class MessageRelease : public ProtonException
     PROTON_CPP_EXTERN explicit MessageRelease(const std::string& message=std::string()) throw();
 };
 
-}}} // namespace proton::cpp::reactor
+}} // namespace proton::reactor
 
 #endif  /*!PROTON_CPP_EXCEPTIONS_H*/

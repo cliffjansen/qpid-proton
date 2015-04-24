@@ -25,7 +25,6 @@
 #include "proton/cpp/Link.h"
 
 namespace proton {
-namespace cpp {
 namespace reactor {
 
 class Handler;
@@ -88,6 +87,6 @@ class MessagingEvent : public ProtonEvent
 };
 
 
-}}} // namespace proton::cpp::reactor
+}} // namespace proton::reactor
 
 #endif  /*!PROTON_CPP_MESSAGINGEVENT_H*/

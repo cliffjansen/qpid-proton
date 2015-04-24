@@ -30,7 +30,6 @@
 #include "proton/connection.h"
 
 namespace proton {
-namespace cpp {
 namespace reactor {
 
 MessagingAdapter::MessagingAdapter(MessagingHandler &d) : delegate(d), handshaker(pn_handshaker()) {
@@ -189,4 +188,4 @@ void MessagingAdapter::onUnhandled(Event &e) {
 
 
 
-}}} // namespace proton::cpp::reactor
+}} // namespace proton::reactor

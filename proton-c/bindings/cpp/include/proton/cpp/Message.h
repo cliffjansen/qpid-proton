@@ -27,7 +27,6 @@
 
 
 namespace proton {
-namespace cpp {
 namespace reactor {
 
 class Message
@@ -49,6 +48,6 @@ class Message
 };
 
 
-}}} // namespace proton::cpp::reactor
+}} // namespace proton::reactor
 
 #endif  /*!PROTON_CPP_MESSAGE_H*/

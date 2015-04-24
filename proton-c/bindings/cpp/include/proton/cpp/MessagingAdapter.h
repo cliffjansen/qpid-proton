@@ -30,7 +30,6 @@
 #include "proton/reactor.h"
 
 namespace proton {
-namespace cpp {
 namespace reactor {
 
 // For now, stands in for Python's: EndpointStateHandler, IncomingMessageHandler, OutgoingMessageHandler
@@ -53,6 +52,6 @@ class MessagingAdapter : public ProtonHandler
 };
 
 
-}}} // namespace proton::cpp::reactor
+}} // namespace proton::reactor
 
 #endif  /*!PROTON_CPP_MESSAGING_ADAPTER_H*/

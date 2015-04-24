@@ -29,12 +29,11 @@
 
 
 namespace proton {
-namespace cpp {
 namespace reactor {
 
 std::string generateUuid();
 // Todo: TimeNow();
 
-}}} // namespace proton::cpp::reactor
+}} // namespace proton::reactor
 
 #endif  /*!PROTON_CPP_PLATFORM_H*/

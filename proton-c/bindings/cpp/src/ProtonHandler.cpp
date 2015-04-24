@@ -22,7 +22,6 @@
 #include "proton/cpp/ProtonEvent.h"
 
 namespace proton {
-namespace cpp {
 namespace reactor {
 
 ProtonHandler::ProtonHandler(){};
@@ -72,4 +71,4 @@ void ProtonHandler::onSelectableFinal(Event &e) { onUnhandled(e); }
 
 void ProtonHandler::onUnhandled(Event &e) {}
 
-}}} // namespace proton::cpp::reactor
+}} // namespace proton::reactor

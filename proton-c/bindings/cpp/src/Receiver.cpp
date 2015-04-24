@@ -27,11 +27,10 @@
 #include "proton/link.h"
 
 namespace proton {
-namespace cpp {
 namespace reactor {
 
 
 Receiver::Receiver(pn_link_t *lnk) : Link(lnk, false) {}
 
 
-}}} // namespace proton::cpp::reactor
+}} // namespace proton::reactor

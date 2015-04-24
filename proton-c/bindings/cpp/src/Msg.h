@@ -26,7 +26,6 @@
 #include <iostream>
 
 namespace proton {
-namespace cpp {
 namespace reactor {
 
 /** A simple wrapper for std::ostringstream that allows
@@ -73,8 +72,8 @@ inline std::ostream& operator<<(std::ostream& o, const Msg& m) {
 /** Construct a message using operator << and append (file:line) */
 #define QUOTE_(x) #x
 #define QUOTE(x) QUOTE_(x)
-#define MSG(message) (::proton::cpp::reactor::Msg() << message << " (" __FILE__ ":" QUOTE(__LINE__) ")")
+#define MSG(message) (::proton::reactor::Msg() << message << " (" __FILE__ ":" QUOTE(__LINE__) ")")
 
-}}} // namespace proton::cpp::reactor
+}} // namespace proton::reactor
 
 #endif  /*!PROTON_MSG_H*/

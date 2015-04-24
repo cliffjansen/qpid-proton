@@ -24,7 +24,7 @@
 #include <iostream>
 
 
-using namespace proton::cpp::reactor;
+using namespace proton::reactor;
 
 
 class HelloWorld : public MessagingHandler {

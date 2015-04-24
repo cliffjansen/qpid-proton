@@ -36,7 +36,6 @@
 #include "proton/session.h"
 
 namespace proton {
-namespace cpp {
 namespace reactor {
 
 class CHandler : public Handler
@@ -239,4 +238,4 @@ void Container::run() {
     pn_reactor_free(reactor);
 }
 
-}}} // namespace proton::cpp::reactor
+}} // namespace proton::reactor

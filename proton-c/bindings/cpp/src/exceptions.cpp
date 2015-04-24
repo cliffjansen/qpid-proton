@@ -21,7 +21,6 @@
 #include "proton/cpp/exceptions.h"
 
 namespace proton {
-namespace cpp {
 namespace reactor {
 
 ProtonException::ProtonException(const std::string& msg) throw() : message(msg) {}
@@ -31,4 +30,4 @@ const char* ProtonException::what() const throw() { return message.c_str(); }
 MessageReject::MessageReject(const std::string& msg) throw() : ProtonException(msg) {}
 MessageRelease::MessageRelease(const std::string& msg) throw() : ProtonException(msg) {}
 
-}}} // namespace proton::cpp::reactor
+}} // namespace proton::reactor

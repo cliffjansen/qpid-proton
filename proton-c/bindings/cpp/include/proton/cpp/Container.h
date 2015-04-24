@@ -30,7 +30,6 @@
 
 #include <string>
 namespace proton {
-namespace cpp {
 namespace reactor {
 
 class DispatchHelper;
@@ -62,6 +61,6 @@ class Container
 };
 
 
-}}} // namespace proton::cpp::reactor
+}} // namespace proton::reactor
 
 #endif  /*!PROTON_CPP_CONTAINER_H*/

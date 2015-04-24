@@ -27,7 +27,6 @@
 struct pn_connection_t;
 
 namespace proton {
-namespace cpp {
 namespace reactor {
 
 class Acceptor
@@ -44,6 +43,6 @@ class Acceptor
 };
 
 
-}}} // namespace proton::cpp::reactor
+}} // namespace proton::reactor
 
 #endif  /*!PROTON_CPP_ACCEPTOR_H*/

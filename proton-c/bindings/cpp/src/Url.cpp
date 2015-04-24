@@ -24,7 +24,6 @@
 #include "Msg.h"
 
 namespace proton {
-namespace cpp {
 namespace reactor {
 
 Url::Url(const std::string &url) : pnUrl(pn_url_parse(url.c_str()))
@@ -73,4 +72,4 @@ std::string Url::getPath() {
 }
 
 
-}}} // namespace proton::cpp::reactor
+}} // namespace proton::reactor

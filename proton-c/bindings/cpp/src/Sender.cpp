@@ -33,7 +33,6 @@
 #include <string.h>
 
 namespace proton {
-namespace cpp {
 namespace reactor {
 
 
@@ -59,4 +58,4 @@ void Sender::send(Message &message) {
         pn_delivery_settle(dlv);
 }
 
-}}} // namespace proton::cpp::reactor
+}} // namespace proton::reactor

@@ -29,7 +29,6 @@
 
 
 namespace proton {
-namespace cpp {
 namespace reactor {
 
 class Event;
@@ -55,6 +54,6 @@ class Connector : public ProtonHandler
 };
 
 
-}}} // namespace proton::cpp::reactor
+}} // namespace proton::reactor
 
 #endif  /*!PROTON_CPP_CONNECTOR_HANDLER_H*/

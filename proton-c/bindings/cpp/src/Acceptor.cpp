@@ -24,7 +24,6 @@
 #include "Msg.h"
 
 namespace proton {
-namespace cpp {
 namespace reactor {
 
 Acceptor::Acceptor() : pnAcceptor(0) {}
@@ -57,4 +56,4 @@ void Acceptor::close() {
         pn_acceptor_close(pnAcceptor);
 }
 
-}}} // namespace proton::cpp::reactor
+}} // namespace proton::reactor

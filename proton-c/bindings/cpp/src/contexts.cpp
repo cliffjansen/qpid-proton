@@ -32,7 +32,6 @@ PN_HANDLE(PNI_CPP_LINK_CONTEXT)
 PN_HANDLE(PNI_CPP_CONTAINER_CONTEXT)
 
 namespace proton {
-namespace cpp {
 namespace reactor {
 
 void setConnectionContext(pn_connection_t *pnConnection, Connection *connection) {
@@ -90,4 +89,4 @@ Container *getContainerContext(pn_reactor_t *pnReactor) {
     return p;
 }
 
-}}} // namespace proton::cpp::reactor
+}} // namespace proton::reactor

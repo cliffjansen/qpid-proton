@@ -25,7 +25,6 @@
 #include "Msg.h"
 
 namespace proton {
-namespace cpp {
 namespace reactor {
 
 enum Level { trace, debug, info, notice, warning, error, critical };
@@ -45,8 +44,8 @@ private:
 };
 
 // Just do simple logging for now
-#define PN_CPP_LOG(LEVEL, MESSAGE) Logger::log(LEVEL, 0, 0, 0, ::proton::cpp::reactor::Msg() << MESSAGE)
+#define PN_CPP_LOG(LEVEL, MESSAGE) Logger::log(LEVEL, 0, 0, 0, ::proton::reactor::Msg() << MESSAGE)
 
-}}} // namespace proton::cpp::reactor
+}} // namespace proton::reactor
 
 #endif  /*!PROTON_CPP_LOG_INTERNAL_H*/

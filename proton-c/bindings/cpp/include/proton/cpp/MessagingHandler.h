@@ -26,7 +26,6 @@
 #include "proton/event.h"
 
 namespace proton {
-namespace cpp {
 namespace reactor {
 
 class Event;
@@ -69,6 +68,6 @@ class PROTON_CPP_EXTERN MessagingHandler : public ProtonHandler
 };
 
 
-}}} // namespace proton::cpp::reactor
+}} // namespace proton::reactor
 
 #endif  /*!PROTON_CPP_MESSAGING_HANDLER_H*/

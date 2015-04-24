@@ -24,7 +24,6 @@
 #include "proton/transport.h"
 
 namespace proton {
-namespace cpp {
 namespace reactor {
 
 
@@ -37,4 +36,4 @@ void Transport::bind(Connection &c) {
     pn_transport_bind(pnTransport, c.getPnConnection());
 }
 
-}}} // namespace proton::cpp::reactor
+}} // namespace proton::reactor

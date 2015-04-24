@@ -31,7 +31,6 @@
 struct pn_connection_t;
 
 namespace proton {
-namespace cpp {
 namespace reactor {
 
 
@@ -43,6 +42,6 @@ class Sender : public Link
 };
 
 
-}}} // namespace proton::cpp::reactor
+}} // namespace proton::reactor
 
 #endif  /*!PROTON_CPP_SENDER_H*/

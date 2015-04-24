@@ -64,7 +64,6 @@ char* pn_i_genuuid(void) {
 
 
 namespace proton {
-namespace cpp {
 namespace reactor {
 
 // include Proton-c platform routines into a local namespace
@@ -77,4 +76,4 @@ std::string generateUuid() {
     return url;
 }
 
-}}} // namespace proton::cpp::reactor
+}} // namespace proton::reactor

@@ -29,7 +29,6 @@
 struct pn_connection_t;
 
 namespace proton {
-namespace cpp {
 namespace reactor {
 
 class Container;
@@ -61,6 +60,6 @@ class Connection : public Endpoint
 };
 
 
-}}} // namespace proton::cpp::reactor
+}} // namespace proton::reactor
 
 #endif  /*!PROTON_CPP_CONNECTION_H*/

@@ -28,7 +28,6 @@
 #include "proton/connection.h"
 
 namespace proton {
-namespace cpp {
 namespace reactor {
 
 
@@ -71,4 +70,4 @@ Container &Connection::getContainer() {
     return (container);
 }
 
-}}} // namespace proton::cpp::reactor
+}} // namespace proton::reactor

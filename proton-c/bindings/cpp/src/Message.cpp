@@ -24,7 +24,6 @@
 #include "Msg.h"
 
 namespace proton {
-namespace cpp {
 namespace reactor {
 
 Message::Message() : pnMessage(pn_message()){}
@@ -90,4 +89,4 @@ void Message::decode(const std::string &s) {
 }
 
 
-}}} // namespace proton::cpp::reactor
+}} // namespace proton::reactor

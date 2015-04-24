@@ -25,7 +25,6 @@
 #include "proton/connection.h"
 
 namespace proton {
-namespace cpp {
 namespace reactor {
 
 class Connection;
@@ -44,6 +43,6 @@ class Container;
 void setContainerContext(pn_reactor_t *pnReactor, Container *container);
 Container *getContainerContext(pn_reactor_t *pnReactor);
 
-}}} // namespace proton::cpp::reactor
+}} // namespace proton::reactor
 
 #endif  /*!PROTON_CPP_CONTEXTS_H*/

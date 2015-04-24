@@ -24,7 +24,6 @@
 #include "proton/cpp/Transport.h"
 
 namespace proton {
-namespace cpp {
 namespace reactor {
 
 Endpoint::Endpoint() {}
@@ -35,4 +34,4 @@ Transport &Endpoint::getTransport() {
     return getConnection().getTransport();
 }
 
-}}} // namespace proton::cpp::reactor
+}} // namespace proton::reactor

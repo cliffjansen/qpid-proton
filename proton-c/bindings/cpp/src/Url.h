@@ -26,7 +26,6 @@
 #include <string>
 
 namespace proton {
-namespace cpp {
 namespace reactor {
 
 class Url
@@ -44,7 +43,7 @@ class Url
 };
 
 
-}}} // namespace proton::cpp::reactor
+}} // namespace proton::reactor
 
 #include "proton/cpp/Sender.h"
 #include "proton/cpp/Receiver.h"

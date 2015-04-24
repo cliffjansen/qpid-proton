@@ -26,7 +26,6 @@
 #include <vector>
 
 namespace proton {
-namespace cpp {
 namespace reactor {
 
 class Event;
@@ -47,6 +46,6 @@ class PROTON_CPP_EXTERN Handler
 };
 
 
-}}} // namespace proton::cpp::reactor
+}} // namespace proton::reactor
 
 #endif  /*!PROTON_CPP_HANDLER_H*/

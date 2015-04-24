@@ -22,7 +22,6 @@
 #include "proton/cpp/Event.h"
 
 namespace proton {
-namespace cpp {
 namespace reactor {
 
 MessagingHandler::MessagingHandler(){};
@@ -58,4 +57,4 @@ void MessagingHandler::onTransactionAborted(Event &e) { onUnhandled(e); }
 void MessagingHandler::onTransactionCommitted(Event &e) { onUnhandled(e); }
 void MessagingHandler::onTransactionDeclared(Event &e) { onUnhandled(e); }
 
-}}} // namespace proton::cpp::reactor
+}} // namespace proton::reactor
