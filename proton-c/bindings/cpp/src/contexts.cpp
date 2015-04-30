@@ -34,16 +34,16 @@ PN_HANDLE(PNI_CPP_CONTAINER_CONTEXT)
 namespace proton {
 namespace reactor {
 
-void setConnectionContext(pn_connection_t *pnConnection, Connection *connection) {
+void setConnectionContext(pn_connection_t *pnConnection, ConnectionImpl *connection) {
     pn_record_t *record = pn_connection_attachments(pnConnection);
     pn_record_def(record, PNI_CPP_CONNECTION_CONTEXT, PN_VOID);
     pn_record_set(record, PNI_CPP_CONNECTION_CONTEXT, connection);
 }
 
-Connection *getConnectionContext(pn_connection_t *pnConnection) {
+ConnectionImpl *getConnectionContext(pn_connection_t *pnConnection) {
     if (!pnConnection) return NULL;
     pn_record_t *record = pn_connection_attachments(pnConnection);
-    Connection *p = (Connection *) pn_record_get(record, PNI_CPP_CONNECTION_CONTEXT);
+    ConnectionImpl *p = (ConnectionImpl *) pn_record_get(record, PNI_CPP_CONNECTION_CONTEXT);
     return p;
 }
 
@@ -76,15 +76,15 @@ Link *getLinkContext(pn_link_t *pnLink) {
 }
 
 
-void setContainerContext(pn_reactor_t *pnReactor, Container *container) {
+void setContainerContext(pn_reactor_t *pnReactor, ContainerImpl *container) {
     pn_record_t *record = pn_reactor_attachments(pnReactor);
     pn_record_def(record, PNI_CPP_CONTAINER_CONTEXT, PN_VOID);
     pn_record_set(record, PNI_CPP_CONTAINER_CONTEXT, container);
 }
 
-Container *getContainerContext(pn_reactor_t *pnReactor) {
+ContainerImpl *getContainerContext(pn_reactor_t *pnReactor) {
     pn_record_t *record = pn_reactor_attachments(pnReactor);
-    Container *p = (Container *) pn_record_get(record, PNI_CPP_CONTAINER_CONTEXT);
+    ContainerImpl *p = (ContainerImpl *) pn_record_get(record, PNI_CPP_CONTAINER_CONTEXT);
     if (!p) throw ProtonException(MSG("Reactor has no C++ container context"));
     return p;
 }

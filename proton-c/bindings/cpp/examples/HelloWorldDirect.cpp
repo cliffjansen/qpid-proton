@@ -19,9 +19,10 @@
  *
  */
 
+#include "proton/cpp/MessagingHandler.h"
 #include "proton/cpp/Container.h"
-#include "proton/cpp/MessagingEvent.h"
-#include "proton/cpp/Acceptor.h"
+
+//#include "proton/cpp/Acceptor.h"
 #include <iostream>
 
 

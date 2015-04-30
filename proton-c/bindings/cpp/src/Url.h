@@ -22,13 +22,14 @@
  *
  */
 #include "proton/cpp/ImportExport.h"
+#include "proton/cpp/ProtonHandle.h"
 #include "proton/url.h"
 #include <string>
 
 namespace proton {
 namespace reactor {
 
-class Url
+class Url : public ProtonHandle<pn_url_t>
 {
   public:
     PROTON_CPP_EXTERN Url(const std::string &url);
@@ -39,13 +40,10 @@ class Url
     PROTON_CPP_EXTERN std::string getPort();
     PROTON_CPP_EXTERN std::string getPath();
   private:
-    pn_url_t *pnUrl;
+    friend class ProtonImplRef<Url>;
 };
 
 
 }} // namespace proton::reactor
-
-#include "proton/cpp/Sender.h"
-#include "proton/cpp/Receiver.h"
 
 #endif  /*!PROTON_CPP_URL_H*/

@@ -22,13 +22,12 @@
  *
  */
 #include "proton/cpp/ImportExport.h"
+#include "proton/cpp/Event.h"
 #include "proton/event.h"
 #include <vector>
 
 namespace proton {
 namespace reactor {
-
-class Event;
 
 class PROTON_CPP_EXTERN Handler
 {

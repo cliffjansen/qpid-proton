@@ -48,7 +48,7 @@ class Connector : public ProtonHandler
     virtual void onTransportClosed(Event &e);
 
   private:
-    Connection &connection;
+    Connection connection;
     std::string address;
     Transport *transport;
 };

@@ -19,36 +19,38 @@
  *
  */
 
-#include "Url.h"
 #include "proton/cpp/exceptions.h"
+#include "Url.h"
+#include "ProtonImplRef.h"
 #include "Msg.h"
 
 namespace proton {
 namespace reactor {
 
-Url::Url(const std::string &url) : pnUrl(pn_url_parse(url.c_str()))
-{
-    if (!pnUrl)
+template class ProtonHandle<pn_url_t>;
+typedef ProtonImplRef<Url> PI;
+
+
+Url::Url(const std::string &url) {
+    pn_url_t *up = pn_url_parse(url.c_str());
+    // refcount is 1, no need to incref
+    if (!up)
         throw ProtonException(MSG("invalid URL: " << url));
-    pn_incref(pnUrl);
+    impl = up;
 }
 
-Url::~Url() {
-    pn_decref(pnUrl);
+Url::~Url() { PI::dtor(*this); }
+
+Url::Url(const Url& c) : ProtonHandle<pn_url_t>() {
+    PI::copy(*this, c);
 }
 
-Url::Url(const Url& l) : pnUrl(l.pnUrl) {
-    pn_incref(pnUrl);
-}
-
-Url& Url::operator=(const Url& l) {
-    pnUrl = l.pnUrl;
-    pn_incref(pnUrl);
-    return *this;
+Url& Url::operator=(const Url& c) {
+    return PI::assign(*this, c);
 }
 
 std::string Url::getPort() {
-    const char *p = pn_url_get_port(pnUrl);
+    const char *p = pn_url_get_port(impl);
     if (!p)
         return std::string("5672");
     else
@@ -56,7 +58,7 @@ std::string Url::getPort() {
 }
 
 std::string Url::getHost() {
-    const char *p = pn_url_get_host(pnUrl);
+    const char *p = pn_url_get_host(impl);
     if (!p)
         return std::string("0.0.0.0");
     else
@@ -64,7 +66,7 @@ std::string Url::getHost() {
 }
 
 std::string Url::getPath() {
-    const char *p = pn_url_get_path(pnUrl);
+    const char *p = pn_url_get_path(impl);
     if (!p)
         return std::string("");
     else

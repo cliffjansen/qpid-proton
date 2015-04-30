@@ -30,6 +30,7 @@ namespace reactor {
 class Handler;
 class Container;
 class Connection;
+class Container;
 
 class ProtonEvent : public Event
 {
@@ -45,8 +46,8 @@ class ProtonEvent : public Event
   protected:
     PROTON_CPP_EXTERN ProtonEvent(pn_event_t *ce, pn_event_type_t t, Container &c);
   private:
-    int type;
     pn_event_t *pnEvent;
+    int type;
     Container &container;
 };
 

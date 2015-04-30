@@ -24,6 +24,8 @@
 #include "proton/connection.h"
 #include "proton/session.h"
 #include "proton/cpp/Session.h"
+#include "proton/cpp/Connection.h"
+#include "ConnectionImpl.h"
 
 namespace proton {
 namespace reactor {
@@ -46,7 +48,7 @@ void Session::open() {
 
 Connection &Session::getConnection() {
     pn_connection_t *c = pn_session_connection(pnSession);
-    return *getConnectionContext(c);
+    return ConnectionImpl::getReactorReference(c);
 }
 
 Receiver Session::createReceiver(std::string name) {

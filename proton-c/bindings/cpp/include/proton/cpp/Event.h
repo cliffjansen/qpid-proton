@@ -23,6 +23,7 @@
  */
 #include "proton/cpp/ImportExport.h"
 #include "proton/cpp/Link.h"
+#include "proton/cpp/Connection.h"
 #include "proton/cpp/Message.h"
 #include <vector>
 
@@ -45,9 +46,12 @@ class Event
     virtual PROTON_CPP_EXTERN Link getLink();
     virtual PROTON_CPP_EXTERN Message getMessage();
     virtual PROTON_CPP_EXTERN void setMessage(Message &);
-    ~Event();
+    virtual PROTON_CPP_EXTERN ~Event();
   protected:
-    PROTON_CPP_EXTERN Event();
+    PROTON_CPP_EXTERN PROTON_CPP_EXTERN Event();
+  private:
+    PROTON_CPP_EXTERN Event(const Event&);
+    PROTON_CPP_EXTERN Event& operator=(const Event&);
 };
 
 

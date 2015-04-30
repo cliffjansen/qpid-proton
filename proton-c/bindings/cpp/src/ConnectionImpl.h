@@ -1,5 +1,5 @@
-#ifndef PROTON_CPP_CONNECTION_H
-#define PROTON_CPP_CONNECTION_H
+#ifndef PROTON_CPP_CONNECTIONIMPL_H
+#define PROTON_CPP_CONNECTIONIMPL_H
 
 /*
  *
@@ -22,7 +22,6 @@
  *
  */
 #include "proton/cpp/ImportExport.h"
-#include "proton/cpp/Handle.h"
 #include "proton/cpp/Endpoint.h"
 #include "proton/cpp/Container.h"
 #include "proton/types.h"
@@ -36,18 +35,12 @@ namespace reactor {
 class Handler;
 class Transport;
 class Container;
-class ConnectionImpl;
 
-class Connection : public Endpoint, public Handle<ConnectionImpl>
+class ConnectionImpl : public Endpoint
 {
   public:
-    PROTON_CPP_EXTERN Connection();
-    PROTON_CPP_EXTERN Connection(ConnectionImpl *);
-    PROTON_CPP_EXTERN Connection(const Connection& c);
-    PROTON_CPP_EXTERN Connection& operator=(const Connection& c);
-    PROTON_CPP_EXTERN ~Connection();
-
-    PROTON_CPP_EXTERN Connection(Container &c);
+    PROTON_CPP_EXTERN ConnectionImpl(Container &c);
+    PROTON_CPP_EXTERN ~ConnectionImpl();
     PROTON_CPP_EXTERN Transport &getTransport();
     PROTON_CPP_EXTERN Handler *getOverride();
     PROTON_CPP_EXTERN void setOverride(Handler *h);
@@ -57,13 +50,24 @@ class Connection : public Endpoint, public Handle<ConnectionImpl>
     PROTON_CPP_EXTERN Container &getContainer();
     PROTON_CPP_EXTERN std::string getHostname();
     virtual PROTON_CPP_EXTERN Connection &getConnection();
+    static Connection &getReactorReference(pn_connection_t *);
+    static ConnectionImpl *getImpl(const Connection &c) { return c.impl; }
+    void reactorDetach();
+    static void incref(ConnectionImpl *);
+    static void decref(ConnectionImpl *);
   private:
-   friend class PrivateImplRef<Connection>;
-   friend class Connector;
-   friend class ConnectionImpl;
+    friend class Connector;
+    friend class ContainerImpl;
+    Container container;
+    int refCount;
+    Handler *override;
+    Transport *transport;
+    pn_session_t *defaultSession;  // Temporary, for SessionPerConnection style policy.
+    pn_connection_t *pnConnection;
+    Connection reactorReference;   // Keep-alive reference, until PN_CONNECTION_FINAL.
 };
 
 
 }} // namespace proton::reactor
 
-#endif  /*!PROTON_CPP_CONNECTION_H*/
+#endif  /*!PROTON_CPP_CONNECTIONIMPL_H*/

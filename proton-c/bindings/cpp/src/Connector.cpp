@@ -25,6 +25,7 @@
 #include "proton/cpp/Event.h"
 #include "proton/connection.h"
 #include "Connector.h"
+#include "ConnectionImpl.h"
 #include "Url.h"
 #include "LogInternal.h"
 
@@ -48,7 +49,7 @@ void Connector::connect() {
     PN_CPP_LOG(info, "connecting to " << hostname << "...");
     transport = new Transport();
     transport->bind(connection);
-    connection.transport = transport;
+    connection.impl->transport = transport;
 }
 
 
@@ -65,7 +66,11 @@ void Connector::onConnectionInit(Event &e) {
 }
 
 void Connector::onTransportClosed(Event &e) {
-    // TODO: reconnect code
+    // TODO: prepend with reconnect logic
+    PN_CPP_LOG(info, "Disconnected");
+    connection.setOverride(0);  // No more call backs
+    pn_connection_release(connection.impl->pnConnection);
+    delete this;
 }
 
 

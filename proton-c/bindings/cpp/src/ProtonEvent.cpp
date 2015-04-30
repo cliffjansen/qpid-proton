@@ -26,6 +26,9 @@
 #include "proton/cpp/ProtonEvent.h"
 #include "proton/cpp/ProtonHandler.h"
 #include "proton/cpp/exceptions.h"
+#include "proton/cpp/Container.h"
+
+#include "ConnectionImpl.h"
 #include "Msg.h"
 #include "contexts.h"
 
@@ -33,9 +36,10 @@ namespace proton {
 namespace reactor {
 
 ProtonEvent::ProtonEvent(pn_event_t *ce, pn_event_type_t t, Container &c) :
-        pnEvent(ce), container(c) {
-    type = (int) t;
-}
+        pnEvent(ce),
+        type((int) t),
+        container(c)
+{}
 
 int ProtonEvent::getType() { return type; }
 
@@ -44,9 +48,10 @@ pn_event_t *ProtonEvent::getPnEvent() { return pnEvent; }
 Container &ProtonEvent::getContainer() { return container; }
 
 Connection &ProtonEvent::getConnection() {
-    Connection *conn = getConnectionContext(pn_event_connection(getPnEvent()));
-    if (conn) return *conn;
-    throw ProtonException(MSG("No connection context for this event"));
+    pn_connection_t *conn = pn_event_connection(getPnEvent());
+    if (!conn)
+        throw ProtonException(MSG("No connection context for this event"));
+    return ConnectionImpl::getReactorReference(conn);
 }
 
 Sender ProtonEvent::getSender() {

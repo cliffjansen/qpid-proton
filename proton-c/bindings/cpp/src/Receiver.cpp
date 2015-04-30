@@ -20,7 +20,8 @@
  */
 #include "proton/cpp/Link.h"
 #include "proton/cpp/Receiver.h"
-#include "contexts.h"
+#include "proton/cpp/exceptions.h"
+#include "Msg.h"
 
 #include "proton/connection.h"
 #include "proton/session.h"
@@ -30,7 +31,13 @@ namespace proton {
 namespace reactor {
 
 
-Receiver::Receiver(pn_link_t *lnk) : Link(lnk, false) {}
+Receiver::Receiver(pn_link_t *lnk) : Link(lnk) {}
+Receiver::Receiver() : Link(0) {}
+
+void Receiver::verifyType(pn_link_t *lnk) {
+    if (lnk && pn_link_is_sender(lnk))
+        throw ProtonException(MSG("Creating receiver with sender context"));
+}
 
 
 }} // namespace proton::reactor

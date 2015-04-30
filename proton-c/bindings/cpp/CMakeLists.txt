@@ -28,9 +28,11 @@ set (qpid-proton-cpp-platform
 
 set (qpid-proton-cpp-core
     src/Connection.cpp
+    src/ConnectionImpl.cpp
     src/Connector.cpp
     src/Connector.h
     src/Container.cpp
+    src/ContainerImpl.cpp
     src/Endpoint.cpp
     src/Event.cpp
     src/Handler.cpp

@@ -24,50 +24,46 @@
 #include "proton/cpp/exceptions.h"
 #include "Msg.h"
 #include "contexts.h"
+#include "ConnectionImpl.h"
+#include "PrivateImplRef.h"
 
 #include "proton/connection.h"
 
 namespace proton {
 namespace reactor {
 
+template class Handle<ConnectionImpl>;
+typedef PrivateImplRef<Connection> PI;
 
-Connection::Connection(Container &c) : container(c), override(0), transport(0), defaultSession(0),
-                                       pnConnection(pn_reactor_connection(container.getReactor(), NULL))
-{
-    setConnectionContext(pnConnection, this);
+Connection::Connection() {}
+Connection::Connection(ConnectionImpl* p) { PI::ctor(*this, p); }
+Connection::Connection(const Connection& c) : Handle<ConnectionImpl>() { PI::copy(*this, c); }
+
+Connection& Connection::operator=(const Connection& c) { return PI::assign(*this, c); }
+Connection::~Connection() { PI::dtor(*this); }
+
+Connection::Connection(Container &c) {
+    ConnectionImpl *cimpl = new ConnectionImpl(c);
+    PI::ctor(*this, cimpl);
 }
 
-Connection::~Connection(){}
+Transport &Connection::getTransport() { return impl->getTransport(); }
 
-Transport &Connection::getTransport() {
-    if (transport)
-        return *transport;
-    throw ProtonException(MSG("Connection has no transport"));
-}
+Handler* Connection::getOverride() { return impl->getOverride(); }
+void Connection::setOverride(Handler *h) { impl->setOverride(h); }
 
-Handler* Connection::getOverride() { return override; }
-void Connection::setOverride(Handler *h) { override = h; }
+void Connection::open() { impl->open(); }
 
-void Connection::open() {
-    pn_connection_open(pnConnection);
-}
+void Connection::close() { impl->close(); }
 
-void Connection::close() {
-    pn_connection_close(pnConnection);
-}
+pn_connection_t *Connection::getPnConnection() { return impl->getPnConnection(); }
 
-pn_connection_t *Connection::getPnConnection() { return pnConnection; }
-
-std::string Connection::getHostname() {
-    return std::string(pn_connection_get_hostname(pnConnection));
-}
+std::string Connection::getHostname() { return impl->getHostname(); }
 
 Connection &Connection::getConnection() {
     return (*this);
 }
 
-Container &Connection::getContainer() {
-    return (container);
-}
+Container &Connection::getContainer() { return impl->getContainer(); }
 
 }} // namespace proton::reactor

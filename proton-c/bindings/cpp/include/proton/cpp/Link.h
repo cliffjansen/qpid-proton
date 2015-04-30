@@ -22,6 +22,7 @@
  *
  */
 #include "proton/cpp/ImportExport.h"
+#include "proton/cpp/ProtonHandle.h"
 #include "proton/cpp/Endpoint.h"
 #include "proton/types.h"
 #include <string>
@@ -31,24 +32,25 @@ struct pn_connection_t;
 namespace proton {
 namespace reactor {
 
-class Link : public Endpoint
+class Link : public Endpoint, public ProtonHandle<pn_link_t>
 {
   public:
+    PROTON_CPP_EXTERN Link(pn_link_t *);
+    PROTON_CPP_EXTERN Link();
+    PROTON_CPP_EXTERN ~Link();
+    PROTON_CPP_EXTERN Link(const Link&);
+    PROTON_CPP_EXTERN Link& operator=(const Link&);
     PROTON_CPP_EXTERN void open();
     PROTON_CPP_EXTERN void close();
     PROTON_CPP_EXTERN bool isSender();
     PROTON_CPP_EXTERN bool isReceiver();
     PROTON_CPP_EXTERN int getCredit();
-    PROTON_CPP_EXTERN pn_link_t *getPnLink();
+    PROTON_CPP_EXTERN pn_link_t *getPnLink() const;
     virtual PROTON_CPP_EXTERN Connection &getConnection();
-    PROTON_CPP_EXTERN ~Link();
-    PROTON_CPP_EXTERN Link(const Link&);
-    PROTON_CPP_EXTERN Link& operator=(const Link&);
-
   protected:
-    PROTON_CPP_EXTERN Link(pn_link_t *lnk, bool isSender);
+    virtual void verifyType(pn_link_t *l);
   private:
-    pn_link_t *pnLink;
+    friend class ProtonImplRef<Link>;
     bool senderLink;
 };
 

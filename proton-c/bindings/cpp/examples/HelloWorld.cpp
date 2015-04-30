@@ -20,12 +20,12 @@
  */
 
 #include "proton/cpp/Container.h"
-#include "proton/cpp/MessagingEvent.h"
+#include "proton/cpp/MessagingHandler.h"
+
 #include <iostream>
 
 
 using namespace proton::reactor;
-
 
 class HelloWorld : public MessagingHandler {
   private:

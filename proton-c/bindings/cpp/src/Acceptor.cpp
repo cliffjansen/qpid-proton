@@ -21,39 +21,36 @@
 
 #include "proton/cpp/Acceptor.h"
 #include "proton/cpp/exceptions.h"
+#include "ProtonImplRef.h"
 #include "Msg.h"
 
 namespace proton {
 namespace reactor {
 
-Acceptor::Acceptor() : pnAcceptor(0) {}
+template class ProtonHandle<pn_acceptor_t>;
+typedef ProtonImplRef<Acceptor> PI;
 
-Acceptor::Acceptor(pn_acceptor_t *a) : pnAcceptor(a)
+Acceptor::Acceptor() {}
+
+Acceptor::Acceptor(pn_acceptor_t *a)
 {
-    if (!pnAcceptor) throw ProtonException(MSG("NULL Proton acceptor object"));
-    pn_incref(pnAcceptor);
+    PI::ctor(*this, a);
 }
 
-Acceptor::~Acceptor() {
-    if (pnAcceptor)
-        pn_decref(pnAcceptor);
+Acceptor::~Acceptor() { PI::dtor(*this); }
+
+
+Acceptor::Acceptor(const Acceptor& a) : ProtonHandle<pn_acceptor_t>() {
+    PI::copy(*this, a);
 }
 
-Acceptor::Acceptor(const Acceptor& l) : pnAcceptor(l.pnAcceptor) {
-    if (pnAcceptor)
-        pn_incref(pnAcceptor);
-}
-
-Acceptor& Acceptor::operator=(const Acceptor& l) {
-    pnAcceptor = l.pnAcceptor;
-    if (pnAcceptor)
-        pn_incref(pnAcceptor);
-    return *this;
+Acceptor& Acceptor::operator=(const Acceptor& a) {
+    return PI::assign(*this, a);
 }
 
 void Acceptor::close() {
-    if (pnAcceptor)
-        pn_acceptor_close(pnAcceptor);
+    if (impl)
+        pn_acceptor_close(impl);
 }
 
 }} // namespace proton::reactor

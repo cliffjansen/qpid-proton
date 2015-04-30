@@ -22,6 +22,7 @@
  *
  */
 #include "proton/cpp/ImportExport.h"
+#include "proton/cpp/ProtonHandle.h"
 #include "proton/reactor.h"
 
 struct pn_connection_t;
@@ -29,17 +30,18 @@ struct pn_connection_t;
 namespace proton {
 namespace reactor {
 
-class Acceptor
+class Acceptor : public ProtonHandle<pn_acceptor_t>
 {
   public:
     PROTON_CPP_EXTERN Acceptor();
     PROTON_CPP_EXTERN Acceptor(pn_acceptor_t *);
-    PROTON_CPP_EXTERN ~Acceptor();
-    PROTON_CPP_EXTERN void close();
     PROTON_CPP_EXTERN Acceptor(const Acceptor&);
     PROTON_CPP_EXTERN Acceptor& operator=(const Acceptor&);
+    PROTON_CPP_EXTERN ~Acceptor();
+
+    PROTON_CPP_EXTERN void close();
   private:
-    pn_acceptor_t *pnAcceptor;
+    friend class ProtonImplRef<Acceptor>;
 };
 
 

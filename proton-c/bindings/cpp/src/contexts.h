@@ -27,9 +27,9 @@
 namespace proton {
 namespace reactor {
 
-class Connection;
-void setConnectionContext(pn_connection_t *pnConnection, Connection *connection);
-Connection *getConnectionContext(pn_connection_t *pnConnection);
+class ConnectionImpl;
+void setConnectionContext(pn_connection_t *pnConnection, ConnectionImpl *connection);
+ConnectionImpl *getConnectionContext(pn_connection_t *pnConnection);
 
 class Session;
 void setSessionContext(pn_session_t *pnSession, Session *session);
@@ -39,9 +39,9 @@ class Link;
 void setLinkContext(pn_link_t *pnLink, Link *link);
 Link *getLinkContext(pn_link_t *pnLink);
 
-class Container;
-void setContainerContext(pn_reactor_t *pnReactor, Container *container);
-Container *getContainerContext(pn_reactor_t *pnReactor);
+class ContainerImpl;
+void setContainerContext(pn_reactor_t *pnReactor, ContainerImpl *container);
+ContainerImpl *getContainerContext(pn_reactor_t *pnReactor);
 
 }} // namespace proton::reactor
 

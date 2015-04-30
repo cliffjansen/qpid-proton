@@ -20,8 +20,11 @@
  */
 #include "proton/cpp/Link.h"
 #include "proton/cpp/exceptions.h"
+#include "proton/cpp/Connection.h"
+#include "ConnectionImpl.h"
 #include "Msg.h"
 #include "contexts.h"
+#include "ProtonImplRef.h"
 
 #include "proton/connection.h"
 #include "proton/session.h"
@@ -30,57 +33,67 @@
 namespace proton {
 namespace reactor {
 
+namespace {
 
-Link::Link(pn_link_t *lnk, bool isSenderLink) : pnLink(lnk), senderLink(isSenderLink)
-{
-    if (!lnk)
-        throw ProtonException(MSG("No link specified"));
-    if (isSenderLink != pn_link_is_sender(lnk))
-        throw ProtonException(MSG("wrong link type"));
-    pn_incref(pnLink);
+static inline void throwIfNull(pn_link_t *l) { if (!l) throw ProtonException(MSG("Disassociated link")); }
+    
 }
 
-Link::~Link() {
-    pn_decref(pnLink);
-}
+template class ProtonHandle<pn_link_t>;
+typedef ProtonImplRef<Link> PI;
 
-Link::Link(const Link& l) : pnLink(l.pnLink), senderLink(l.senderLink) {
-    pn_incref(pnLink);
+Link::Link(pn_link_t* p) {
+    verifyType(p);
+    PI::ctor(*this, p);
+    if (p) senderLink = pn_link_is_sender(p);
 }
-
-Link& Link::operator=(const Link& l) {
-    pnLink = l.pnLink;
-    senderLink = l.senderLink;
-    pn_incref(pnLink);
-    return *this;
+Link::Link() {
+    PI::ctor(*this, 0); 
 }
+Link::Link(const Link& c) : ProtonHandle<pn_link_t>() {
+    verifyType(impl);
+    PI::copy(*this, c);
+    senderLink = c.senderLink;
+}
+Link& Link::operator=(const Link& c) {
+    verifyType(impl);
+    senderLink = c.senderLink;
+    return PI::assign(*this, c);
+}
+Link::~Link() { PI::dtor(*this); }
 
-pn_link_t *Link::getPnLink() { return pnLink; }
+void Link::verifyType(pn_link_t *l) {} // Generic link can be sender or receiver
+
+pn_link_t *Link::getPnLink() const { return impl; }
 
 void Link::open() {
-    pn_link_open(pnLink);
+    throwIfNull(impl);
+    pn_link_open(impl);
 }
 
 void Link::close() {
-    pn_link_close(pnLink);
+    throwIfNull(impl);
+    pn_link_close(impl);
 }
 
 bool Link::isSender() {
-    return senderLink;
+    return impl && senderLink;
 }
 
 bool Link::isReceiver() {
-    return !senderLink;
+    return impl && !senderLink;
 }
 
 int Link::getCredit() {
-    return pn_link_credit(pnLink);
+    throwIfNull(impl);
+    return pn_link_credit(impl);
 }
 
 Connection &Link::getConnection() {
-    pn_session_t *s = pn_link_session(pnLink);
+    throwIfNull(impl);
+    pn_session_t *s = pn_link_session(impl);
     pn_connection_t *c = pn_session_connection(s);
-    return *getConnectionContext(c);
+    return ConnectionImpl::getReactorReference(c);
 }
 
 }} // namespace proton::reactor

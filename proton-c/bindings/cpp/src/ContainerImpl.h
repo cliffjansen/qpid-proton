@@ -1,5 +1,5 @@
-#ifndef PROTON_CPP_CONTAINER_H
-#define PROTON_CPP_CONTAINER_H
+#ifndef PROTON_CPP_CONTAINERIMPL_H
+#define PROTON_CPP_CONTAINERIMPL_H
 
 /*
  *
@@ -22,11 +22,13 @@
  *
  */
 #include "proton/cpp/ImportExport.h"
-#include "proton/cpp/Handle.h"
-#include "proton/cpp/Acceptor.h"
-#include <proton/reactor.h>
-#include <string>
+#include "proton/cpp/MessagingHandler.h"
+#include "proton/cpp/Connection.h"
+#include "proton/cpp/Link.h"
 
+#include "proton/reactor.h"
+
+#include <string>
 namespace proton {
 namespace reactor {
 
@@ -34,21 +36,12 @@ class DispatchHelper;
 class Connection;
 class Connector;
 class Acceptor;
-class ContainerImpl;
-class MessagingHandler;
-class Sender;
-class Receiver;
-class Link;
 
-class Container : public Handle<ContainerImpl>
+class ContainerImpl
 {
   public:
-    PROTON_CPP_EXTERN Container(ContainerImpl *);
-    PROTON_CPP_EXTERN Container(const Container& c);
-    PROTON_CPP_EXTERN Container& operator=(const Container& c);
-    PROTON_CPP_EXTERN ~Container();
-
-    PROTON_CPP_EXTERN Container(MessagingHandler &mhandler);
+    PROTON_CPP_EXTERN ContainerImpl(MessagingHandler &mhandler);
+    PROTON_CPP_EXTERN ~ContainerImpl();
     PROTON_CPP_EXTERN Connection connect(std::string &host);
     PROTON_CPP_EXTERN void run();
     PROTON_CPP_EXTERN pn_reactor_t *getReactor();
@@ -58,10 +51,19 @@ class Container : public Handle<ContainerImpl>
     PROTON_CPP_EXTERN Receiver createReceiver(Connection &connection, std::string &addr);
     PROTON_CPP_EXTERN Acceptor listen(const std::string &url);
     PROTON_CPP_EXTERN std::string getContainerId();
+    static void incref(ContainerImpl *);
+    static void decref(ContainerImpl *);
   private:
-   friend class PrivateImplRef<Container>;
+    void dispatch(pn_event_t *event, pn_event_type_t type);
+    Acceptor acceptor(const std::string &host, const std::string &port);
+    pn_reactor_t *reactor;
+    pn_handler_t *globalHandler;
+    MessagingHandler &messagingHandler;
+    std::string containerId;
+    int refCount;
 };
+
 
 }} // namespace proton::reactor
 
-#endif  /*!PROTON_CPP_CONTAINER_H*/
+#endif  /*!PROTON_CPP_CONTAINERIMPL_H*/
