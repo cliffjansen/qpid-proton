@@ -39,6 +39,19 @@ class receiver;
 class link : public counted_facade<pn_link_t, link, endpoint>
 {
   public:
+    /// Sender settlement behaviour for a link
+    enum sender_settle_mode_t {
+        UNSETTLED = PN_SND_UNSETTLED,
+        SETTLED = PN_SND_SETTLED,
+        MIXED = PN_SND_MIXED
+    };
+
+    /// Receiver settlement behaviour for a link
+    enum receiver_settle_mode_t {
+        SETTLE_ALWAYS = PN_RCV_FIRST,
+        SETTLE_SECOND= PN_RCV_SECOND
+    };
+
     /** Locally open the link, not complete till messaging_handler::on_link_opened or
      * proton_handler::link_remote_open
      */
@@ -59,6 +72,14 @@ class link : public counted_facade<pn_link_t, link, endpoint>
     PN_CPP_EXTERN class receiver& receiver();
     /** Credit available on the link */
     PN_CPP_EXTERN int credit();
+    /** The number of deliveries that might be able to be sent if sufficient credit were issued on the link */
+    PN_CPP_EXTERN int available();
+    /** The number of queued deliveries for the link */
+    PN_CPP_EXTERN int queued();
+    /** The number of unsettled deliveries on the link */
+    PN_CPP_EXTERN int unsettled();
+    /** The count of credit returned.  */
+    PN_CPP_EXTERN int drained();
 
     /** True if link has source */
     PN_CPP_EXTERN bool has_source();
@@ -97,6 +118,13 @@ class link : public counted_facade<pn_link_t, link, endpoint>
 
     /** Get the endpoint state */
     PN_CPP_EXTERN endpoint::state state();
+
+    PN_CPP_EXTERN sender_settle_mode_t sender_settle_mode();
+    PN_CPP_EXTERN void sender_settle_mode(sender_settle_mode_t);
+    PN_CPP_EXTERN receiver_settle_mode_t receiver_settle_mode();
+    PN_CPP_EXTERN void receiver_settle_mode(receiver_settle_mode_t);
+    PN_CPP_EXTERN sender_settle_mode_t remote_sender_settle_mode();
+    PN_CPP_EXTERN receiver_settle_mode_t remote_receiver_settle_mode();
 };
 
 }

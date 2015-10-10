@@ -35,6 +35,8 @@ foreach(example
     server
     server_direct
     recurring_timer
+    queue_browser
+    selected_recv
     encode_decode)
   add_executable(${example} ${example}.cpp)
   target_link_libraries(${example} ${ProtonCpp_LIBRARIES})

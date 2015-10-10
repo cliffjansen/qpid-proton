@@ -33,7 +33,7 @@ void terminus::type(type_t type) {
 }
 
 terminus::expiry_policy_t terminus::expiry_policy() {
-    return (expiry_policy_t) pn_terminus_get_type(pn_cast(this));
+    return (expiry_policy_t) pn_terminus_get_expiry_policy(pn_cast(this));
 }
 
 void terminus::expiry_policy(expiry_policy_t policy) {
@@ -41,11 +41,19 @@ void terminus::expiry_policy(expiry_policy_t policy) {
 }
 
 terminus::distribution_mode_t terminus::distribution_mode() {
-    return (distribution_mode_t) pn_terminus_get_type(pn_cast(this));
+    return (distribution_mode_t) pn_terminus_get_distribution_mode(pn_cast(this));
 }
 
 void terminus::distribution_mode(distribution_mode_t mode) {
     pn_terminus_set_distribution_mode(pn_cast(this), (pn_distribution_mode_t) mode);
+}
+
+terminus::durability_t terminus::durability() {
+    return (durability_t) pn_terminus_get_durability(pn_cast(this));
+}
+
+void terminus::durability(durability_t mode) {
+    pn_terminus_set_durability(pn_cast(this), (pn_durability_t) mode);
 }
 
 std::string terminus::address() {
@@ -63,6 +71,10 @@ bool terminus::is_dynamic() {
 
 void terminus::dynamic(bool d) {
     pn_terminus_set_dynamic(pn_cast(this), d);
+}
+
+data& terminus::filter() {
+    return *data::cast(pn_terminus_filter(pn_cast(this)));
 }
 
 }

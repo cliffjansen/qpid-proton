@@ -45,11 +45,19 @@ class terminus : public counted_facade<pn_terminus_t, terminus>
         COORDINATOR = PN_COORDINATOR ///< Transaction co-ordinator
     };
 
-    /// Expiry policy
-    enum expiry_policy_t {
+    /// Durability
+    enum durability_t {
         NONDURABLE = PN_NONDURABLE,
         CONFIGURATION = PN_CONFIGURATION,
         DELIVERIES = PN_DELIVERIES
+    };
+
+    /// Expiry policy
+    enum expiry_policy_t {
+        EXPIRE_WITH_LINK = PN_EXPIRE_WITH_LINK,
+        EXPIRE_WITH_SESSION = PN_EXPIRE_WITH_SESSION,
+        EXPIRE_WITH_CONNECTION = PN_EXPIRE_WITH_CONNECTION,
+        EXPIRE_NEVER = PN_EXPIRE_NEVER
     };
 
     /// Distribution mode
@@ -65,10 +73,13 @@ class terminus : public counted_facade<pn_terminus_t, terminus>
     PN_CPP_EXTERN void expiry_policy(expiry_policy_t);
     PN_CPP_EXTERN distribution_mode_t distribution_mode();
     PN_CPP_EXTERN void distribution_mode(distribution_mode_t);
+    PN_CPP_EXTERN durability_t durability();
+    PN_CPP_EXTERN void durability(durability_t);
     PN_CPP_EXTERN std::string address();
     PN_CPP_EXTERN void address(const std::string &);
     PN_CPP_EXTERN bool is_dynamic();
     PN_CPP_EXTERN void dynamic(bool);
+    PN_CPP_EXTERN data& filter();
 };
 
 

@@ -24,6 +24,7 @@
 #include "proton/export.hpp"
 #include "proton/endpoint.hpp"
 #include "proton/container.hpp"
+#include "proton/link_options.hpp"
 #include "proton/types.h"
 #include <string>
 
@@ -60,11 +61,15 @@ class connection : public counted_facade<pn_connection_t, connection, endpoint>
     /** Default session is created on first call and re-used for the lifeime of the connection */
     PN_CPP_EXTERN class session& default_session();
 
-    /** Create a sender on default_session() with target=addr and optional handler h */
-    PN_CPP_EXTERN sender& create_sender(const std::string &addr, handler *h=0);
+    /** Create a sender on default_session() with target=addr, optional handler h,
+        and optional link options */
+    PN_CPP_EXTERN sender& create_sender(const std::string &addr, handler *h=0,
+                                        const link_options &opts = link_options());
 
-    /** Create a receiver on default_session() with target=addr and optional handler h */
-    PN_CPP_EXTERN receiver& create_receiver(const std::string &addr, bool dynamic=false, handler *h=0);
+    /** Create a receiver on default_session() with target=addr, optional handler h and
+        optional link options */
+    PN_CPP_EXTERN receiver& create_receiver(const std::string &addr, bool dynamic=false, handler *h=0,
+                                            const link_options &opts = link_options());
 
     /** Get the first link on this connection matching the state mask.
      * Return 0 if none. Don't delete returned pointer.

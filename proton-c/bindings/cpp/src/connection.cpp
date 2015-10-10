@@ -68,13 +68,17 @@ session& connection::default_session() {
     return *ctx.default_session;
 }
 
-sender& connection::create_sender(const std::string &addr, handler *h) {
-    return default_session().create_sender(addr, h);
+sender& connection::create_sender(const std::string &addr, handler *h, const link_options &options) {
+    sender &snd = default_session().create_sender(addr, h);
+    options.apply(*reinterpret_cast<link*>(&snd));
+    return snd;
 }
 
-receiver& connection::create_receiver(const std::string &addr, bool dynamic, handler *h)
+receiver& connection::create_receiver(const std::string &addr, bool dynamic, handler *h, const link_options &options)
 {
-    return default_session().create_receiver(addr, dynamic, h);
+    receiver &rcv = default_session().create_receiver(addr, dynamic, h);
+    options.apply(*reinterpret_cast<link*>(&rcv));
+    return rcv;
 }
 
 endpoint::state connection::state() { return pn_connection_state(pn_cast(this)); }

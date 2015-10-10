@@ -56,6 +56,22 @@ int link::credit() {
     return pn_link_credit(pn_cast(this));
 }
 
+int link::available() {
+    return pn_link_available(pn_cast(this));
+}
+
+int link::queued() {
+    return pn_link_queued(pn_cast(this));
+}
+
+int link::unsettled() {
+    return pn_link_unsettled(pn_cast(this));
+}
+
+int link::drained() {
+    return pn_link_drained(pn_cast(this));
+}
+
 bool link::has_source() { return pn_link_source(pn_cast(this)); }
 bool link::has_target() { return pn_link_target(pn_cast(this)); }
 bool link::has_remote_source() { return pn_link_remote_source(pn_cast(this)); }
@@ -89,4 +105,32 @@ void link::detach_handler() {
 }
 
 endpoint::state link::state() { return pn_link_state(pn_cast(this)); }
+
+link::sender_settle_mode_t link::sender_settle_mode() {
+    return (sender_settle_mode_t) pn_link_snd_settle_mode(pn_cast(this));
+}
+
+void link::sender_settle_mode(sender_settle_mode_t mode) {
+    pn_link_set_snd_settle_mode(pn_cast(this), (pn_snd_settle_mode_t) mode);
+}
+
+link::receiver_settle_mode_t link::receiver_settle_mode() {
+    return (receiver_settle_mode_t) pn_link_rcv_settle_mode(pn_cast(this));
+}
+
+void link::receiver_settle_mode(receiver_settle_mode_t mode) {
+    pn_link_set_rcv_settle_mode(pn_cast(this), (pn_rcv_settle_mode_t) mode);
+}
+
+
+link::sender_settle_mode_t link::remote_sender_settle_mode() {
+    return (sender_settle_mode_t) pn_link_remote_snd_settle_mode(pn_cast(this));
+}
+
+link::receiver_settle_mode_t link::remote_receiver_settle_mode() {
+    return (receiver_settle_mode_t) pn_link_remote_rcv_settle_mode(pn_cast(this));
+}
+
+
+
 }
