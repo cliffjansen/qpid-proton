@@ -35,6 +35,7 @@ foreach(example
     server
     server_direct
     recurring_timer
+    connection_options
     encode_decode)
   add_executable(${example} ${example}.cpp)
   target_link_libraries(${example} ${ProtonCpp_LIBRARIES})

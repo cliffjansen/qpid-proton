@@ -23,8 +23,8 @@
  */
 
 #include "proton/facade.hpp"
-
 #include "proton/export.hpp"
+#include "proton/types.hpp"
 
 struct pn_transport_t;
 
@@ -36,7 +36,15 @@ class connection;
 class transport : public counted_facade<pn_transport_t, transport>
 {
   public:
-    class connection* connection() const;
+    PN_CPP_EXTERN class connection* connection() const;
+    PN_CPP_EXTERN void unbind();
+    PN_CPP_EXTERN void bind(class connection &);
+    PN_CPP_EXTERN uint32_t max_frame_size() const;
+    PN_CPP_EXTERN uint32_t remote_max_frame_size() const;
+    PN_CPP_EXTERN uint16_t max_channels() const;
+    PN_CPP_EXTERN uint16_t remote_max_channels() const;
+    PN_CPP_EXTERN uint32_t idle_timeout() const;
+    PN_CPP_EXTERN uint32_t remote_idle_timeout() const;
 };
 
 

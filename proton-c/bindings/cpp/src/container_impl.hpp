@@ -38,13 +38,14 @@ class connection;
 class connector;
 class acceptor;
 class container;
+class reconnect_timer;
 
 class container_impl
 {
   public:
     PN_CPP_EXTERN container_impl(container&, handler *, const std::string& id);
     PN_CPP_EXTERN ~container_impl();
-    PN_CPP_EXTERN connection& connect(const url&, handler *h);
+    PN_CPP_EXTERN connection& connect(const url&, const connection_options &);
     PN_CPP_EXTERN sender& open_sender(connection &connection, const std::string &addr, handler *h);
     PN_CPP_EXTERN sender& open_sender(const url&);
     PN_CPP_EXTERN receiver& open_receiver(connection &connection, const std::string &addr, bool dynamic, handler *h);
@@ -52,11 +53,17 @@ class container_impl
     PN_CPP_EXTERN class acceptor& listen(const url&);
     PN_CPP_EXTERN duration timeout();
     PN_CPP_EXTERN void timeout(duration timeout);
+    PN_CPP_EXTERN void client_connection_options(const connection_options &);
+    PN_CPP_EXTERN const connection_options& client_connection_options() { return *client_connection_options_; }
+    PN_CPP_EXTERN void server_connection_options(const connection_options &);
+    PN_CPP_EXTERN const connection_options& server_connection_options() { return *server_connection_options_; }
 
+    void configure_server_connection(connection &c);
     task& schedule(int delay, handler *h);
     counted_ptr<pn_handler_t> cpp_handler(handler *h);
 
     std::string next_link_name();
+
 
   private:
 
@@ -68,6 +75,9 @@ class container_impl
     pn_unique_ptr<handler> flow_controller_;
     std::string id_;
     uint64_t link_id_;
+    reconnect_timer *default_reconnect_;
+    connection_options *client_connection_options_;
+    connection_options *server_connection_options_;
 
   friend class container;
 };

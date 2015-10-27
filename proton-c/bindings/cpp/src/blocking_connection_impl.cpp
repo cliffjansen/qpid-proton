@@ -50,7 +50,8 @@ blocking_connection_impl::blocking_connection_impl(const url& url, duration time
 {
     container_->reactor().start();
     container_->reactor().timeout(timeout);
-    connection_ = container_->connect(url, this).ptr(); // Set this as handler.
+    handler *h = static_cast<handler*>(this); // Set this as handler.
+    connection_ = container_->connect(url, connection_options(connection_handler(h))).ptr();
     wait(connection_opening(pn_cast(connection_.get())));
 }
 

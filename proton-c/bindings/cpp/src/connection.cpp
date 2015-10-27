@@ -28,6 +28,7 @@
 #include "msg.hpp"
 #include "contexts.hpp"
 #include "container_impl.hpp"
+#include "connector.hpp"
 
 #include "proton/connection.h"
 #include "proton/session.h"
@@ -41,7 +42,13 @@ transport &connection::transport() const {
     return *transport::cast(pn_connection_transport(pn_cast(this)));
 }
 
-void connection::open() { pn_connection_open(pn_cast(this)); }
+void connection::open() {
+    connector *connector = dynamic_cast<class connector*>(connection_context::get(pn_cast(this)).handler.get());
+    if (connector)
+        connector->apply_options();
+    // Inbound connections should already be configured.
+    pn_connection_open(pn_cast(this));
+}
 
 void connection::close() { pn_connection_close(pn_cast(this)); }
 

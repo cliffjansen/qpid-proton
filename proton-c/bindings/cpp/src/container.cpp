@@ -47,7 +47,7 @@ container::container(messaging_handler &mhandler, const std::string& id) :
 
 container::~container() {}
 
-connection& container::connect(const url &host, handler *h) { return impl_->connect(host, h); }
+connection& container::connect(const url &host, const connection_options &opts) { return impl_->connect(host, opts); }
 
 reactor &container::reactor() const { return *impl_->reactor_; }
 
@@ -69,4 +69,7 @@ acceptor& container::listen(const proton::url &url) {
 
 task& container::schedule(int delay, handler *h) { return impl_->schedule(delay, h); }
 
+void container::client_connection_options(const connection_options &o) { impl_->client_connection_options(o); }
+
+void container::server_connection_options(const connection_options &o) { impl_->server_connection_options(o); }
 } // namespace proton

@@ -26,6 +26,7 @@
 #include "proton/pn_unique_ptr.hpp"
 #include "proton/reactor.hpp"
 #include "proton/url.hpp"
+#include "connection_options.hpp"
 
 #include <string>
 
@@ -40,6 +41,7 @@ class link;
 class handler;
 class task;
 class container_impl;
+
 
 /**
  * Top level container for connections and other objects, runs the event loop.
@@ -59,7 +61,7 @@ class container
     PN_CPP_EXTERN ~container();
 
     /** Locally open a connection @see connection::open  */
-    PN_CPP_EXTERN connection& connect(const proton::url&, handler *h=0);
+    PN_CPP_EXTERN connection& connect(const proton::url&, const connection_options &opts = connection_options());
 
     /** Open a connection to url and create a receiver with source=url.path() */
     PN_CPP_EXTERN acceptor& listen(const proton::url &);
@@ -79,10 +81,22 @@ class container
     /// The reactor associated with this container.
     PN_CPP_EXTERN class reactor& reactor() const;
 
-    // Schedule a timer task event in delay milliseconds.
+    /// Schedule a timer task event in delay milliseconds.
     PN_CPP_EXTERN task& schedule(int delay, handler *h = 0);
 
+    /** Copy the connection options to a template which will be
+        applied to subsequent outgoing connections.  These are applied first
+        and overriden by additional connection options provided in
+        other methods */
+    PN_CPP_EXTERN void client_connection_options(const connection_options &);
+
+    /** Copy the connection options to a template which will be
+        applied to incoming connections.  These are applied before the
+        first open event on the connection. */
+    PN_CPP_EXTERN void server_connection_options(const connection_options &);
+
   private:
+    friend class connector;
     pn_unique_ptr<container_impl> impl_;
 };
 
