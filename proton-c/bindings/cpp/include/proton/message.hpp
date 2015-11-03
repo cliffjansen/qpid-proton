@@ -104,10 +104,10 @@ class message
     PN_CPP_EXTERN void body(const value&);
 
     /** Get the body. Note data can be copied to a proton::value */
-    PN_CPP_EXTERN const data& body() const;
+    PN_CPP_EXTERN const data body() const;
 
     /** Get a reference to the body data, can be modified in-place. */
-    PN_CPP_EXTERN data& body();
+    PN_CPP_EXTERN data body();
 
     /** Set the application properties. Must be a map with string keys or an
      * empty value. You can assign to a proton::value from a standard C++ map
@@ -119,10 +119,10 @@ class message
      * an empty value. You can assign proton::value containing a map to a
      * standard C++ map of std::string to proton::value.
      */
-    PN_CPP_EXTERN const data& properties() const;
+    PN_CPP_EXTERN const data properties() const;
 
     /** Get a reference to the application properties, can be modified in-place.*/
-    PN_CPP_EXTERN data& properties();
+    PN_CPP_EXTERN data properties();
 
     /** Set an individual application property. */
     PN_CPP_EXTERN void property(const std::string &name, const value &);
@@ -143,7 +143,7 @@ class message
     PN_CPP_EXTERN void decode(const std::string &bytes);
 
     /// Decode the message from link corresponding to delivery.
-    PN_CPP_EXTERN void decode(proton::link&, proton::delivery&);
+    PN_CPP_EXTERN void decode(proton::link, proton::delivery);
 
     /**
      * Get the inferred flag for a message.
