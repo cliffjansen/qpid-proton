@@ -49,7 +49,7 @@ class object_base {
     object_base(const object_base& o) : object_(o.object_) { incref(); }
 
     #ifdef PN_HAS_CPP11
-    object_base(object_base&& o) { *this = std::move(o); }
+    object_base(object_base&& o) : object_base() { *this = o; }
     #endif
 
     ~object_base() { decref(); };
