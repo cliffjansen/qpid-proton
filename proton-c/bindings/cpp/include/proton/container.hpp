@@ -77,10 +77,10 @@ class container : public event_loop {
     PN_CPP_EXTERN std::string id() const;
 
     /// The reactor associated with this container.
-    PN_CPP_EXTERN class reactor& reactor() const;
+    PN_CPP_EXTERN class reactor reactor() const;
 
     // Schedule a timer task event in delay milliseconds.
-    PN_CPP_EXTERN task& schedule(int delay, handler *h = 0);
+    PN_CPP_EXTERN task schedule(int delay, handler *h = 0);
 
   private:
     pn_unique_ptr<container_impl> impl_;

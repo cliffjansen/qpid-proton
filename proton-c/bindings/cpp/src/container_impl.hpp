@@ -53,7 +53,7 @@ class container_impl
     PN_CPP_EXTERN duration timeout();
     PN_CPP_EXTERN void timeout(duration timeout);
 
-    task& schedule(int delay, handler *h);
+    task schedule(int delay, handler *h);
     counted_ptr<pn_handler_t> cpp_handler(handler *h);
 
     std::string next_link_name();
@@ -61,7 +61,7 @@ class container_impl
   private:
 
     container& container_;
-    pn_unique_ptr<reactor> reactor_;
+    reactor reactor_;
     handler *handler_;
     pn_unique_ptr<messaging_adapter> messaging_adapter_;
     pn_unique_ptr<handler> override_handler_;

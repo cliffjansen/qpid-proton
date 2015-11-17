@@ -22,7 +22,6 @@
  *
  */
 
-#include "proton/pn_unique_ptr.hpp"
 #include "proton/export.hpp"
 #include "proton/duration.hpp"
 #include "proton/pn_unique_ptr.hpp"

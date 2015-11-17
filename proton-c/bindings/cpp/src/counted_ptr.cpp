@@ -17,14 +17,7 @@
  * under the License.
  */
 
-#include "proton/facade.hpp"
 #include <proton/object.h>
-
-#if PN_HAS_CPP11
-#include <type_traits>
-#endif
-
-#include <assert.h>
 
 namespace proton {
 
@@ -35,12 +28,5 @@ void incref(const void* p) {
 void decref(const void* p) {
     if (p) ::pn_decref(const_cast<void*>(p));
 }
-
-// Make sure facade types are empty.
-#if PN_HAS_CPP11
-#define CHECK_EMPTY(T) static_assert(std::is_empty<T>::value,  "facade " #T " not empty")
-#else
-#define CHECK_EMPTY(T) struct T##_CHECK_EMPTY__ { char T##__facade_not_empty[sizeof(T) == 1 ? 1 : -1]; }
-#endif
 
 }

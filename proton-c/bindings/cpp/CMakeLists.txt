@@ -36,6 +36,7 @@ set(qpid-proton-cpp-source
   src/connector.cpp
   src/container.cpp
   src/container_impl.cpp
+  src/counted_ptr.cpp
   src/contexts.cpp
   src/data.cpp
   src/decoder.cpp
@@ -46,7 +47,6 @@ set(qpid-proton-cpp-source
   src/engine.cpp
   src/error.cpp
   src/event.cpp
-  src/facade.cpp
   src/handler.cpp
   src/link.cpp
   src/message.cpp

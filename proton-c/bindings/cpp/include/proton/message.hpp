@@ -24,7 +24,6 @@
 
 #include "proton/data.hpp"
 #include "proton/export.hpp"
-#include "proton/facade.hpp"
 #include "proton/message_id.hpp"
 #include "proton/pn_unique_ptr.hpp"
 #include "proton/value.hpp"

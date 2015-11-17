@@ -72,10 +72,10 @@ struct save_timeout {
 
 void blocking_connection_impl::wait(const condition &condition, const std::string &msg, duration wait_timeout)
 {
-    reactor& reactor = container_->reactor();
+    reactor reactor = container_->reactor();
 
     if (wait_timeout == duration(-1))
-        wait_timeout = container_->reactor().timeout();
+        wait_timeout = reactor.timeout();
 
     if (wait_timeout == duration::FOREVER) {
         while (!condition()) {
@@ -84,11 +84,11 @@ void blocking_connection_impl::wait(const condition &condition, const std::strin
     } else {
         save_timeout st(reactor);
         reactor.timeout(wait_timeout);
-        pn_timestamp_t deadline = pn_reactor_mark(pn_cast(&reactor)) + wait_timeout.milliseconds;
+        pn_timestamp_t deadline = reactor.mark() + wait_timeout.milliseconds;
         while (!condition()) {
             reactor.process();
             if (!condition()) {
-                pn_timestamp_t now = pn_reactor_mark(pn_cast(&reactor));
+                pn_timestamp_t now = reactor.mark();
                 if (now < deadline)
                     reactor.timeout(duration(deadline - now));
                 else

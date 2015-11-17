@@ -49,7 +49,7 @@ class reactor_send : public proton::messaging_handler {
     proton::amqp_binary received_content_;
     bool replying_;
     proton::message_id id_value_;
-    pn_reactor_t *reactor_;
+    proton::reactor reactor_;
   public:
 
     reactor_send(const std::string &url, int c, int size, bool replying)
@@ -65,7 +65,7 @@ class reactor_send : public proton::messaging_handler {
 
     void on_start(proton::event &e) {
         e.container().open_sender(url_);
-        reactor_ = pn_cast(&e.container().reactor());
+        reactor_ = e.container().reactor();
     }
 
     void on_sendable(proton::event &e) {
@@ -74,7 +74,7 @@ class reactor_send : public proton::messaging_handler {
         while (sender.credit() && sent_ < total_) {
             id_value_ = sent_ + 1;
             message_.correlation_id(id_value_);
-            proton::amqp_timestamp reactor_now(pn_reactor_now(reactor_));
+            proton::amqp_timestamp reactor_now(reactor_.now());
             message_.creation_time(reactor_now);
             sender.send(message_);
             sent_++;
