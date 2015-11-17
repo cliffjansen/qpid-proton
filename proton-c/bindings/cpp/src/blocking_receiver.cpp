@@ -56,7 +56,7 @@ blocking_receiver::blocking_receiver(
         throw error(MSG(txt));
     }
     if (credit)
-        pn_link_flow(link_, credit);
+        link_.flow(credit);
 }
 
 blocking_receiver::~blocking_receiver() { link_.detach_handler(); }

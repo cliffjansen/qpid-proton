@@ -59,6 +59,22 @@ class data : public object<pn_data_t> {
     /** Decoder to decode from this value */
     PN_CPP_EXTERN class decoder decoder();
 
+    /** Return the data cursor position */
+    PN_CPP_EXTERN uintptr_t point() const;
+
+    /** Restore the cursor position to a previously saved position */
+    PN_CPP_EXTERN void restore(uintptr_t h);
+
+    PN_CPP_EXTERN void narrow();
+
+    PN_CPP_EXTERN void widen();
+
+    PN_CPP_EXTERN int append(data src);
+
+    PN_CPP_EXTERN int appendn(data src, int limit);
+
+    PN_CPP_EXTERN bool next() const;
+
     /** Rewind and return the type of the first value*/
     PN_CPP_EXTERN type_id type() const;
 

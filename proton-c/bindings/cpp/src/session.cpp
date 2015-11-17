@@ -30,28 +30,27 @@
 namespace proton {
 
 void session::open() {
-    pn_session_open(*this);
+    pn_session_open(pn_object());
 }
 
 connection session::connection() const {
-    return pn_session_connection(*this);
+    return pn_session_connection(pn_object());
 }
 
 namespace {
 std::string set_name(const std::string& name, session* s) {
     if (name.empty())
-        return connection_context::get(
-            s->connection()).container_impl->next_link_name();
+        return s->connection().context().container_impl->next_link_name();
     return name;
 }
 }
 
 receiver session::create_receiver(const std::string& name) {
-    return pn_receiver(*this, set_name(name, this).c_str());
+    return pn_receiver(pn_object(), set_name(name, this).c_str());
 }
 
 sender session::create_sender(const std::string& name) {
-    return pn_sender(*this, set_name(name, this).c_str());
+    return pn_sender(pn_object(), set_name(name, this).c_str());
 }
 
 sender session::open_sender(const std::string &addr, handler *h) {
@@ -72,7 +71,12 @@ receiver session::open_receiver(const std::string &addr, bool dynamic, handler *
     return rcv;
 }
 
-endpoint::state session::state() const { return pn_session_state(*this); }
+session session::next(endpoint::state s) const
+{
+    return pn_session_next(pn_object(), s);
+}
+
+endpoint::state session::state() const { return pn_session_state(pn_object()); }
 
 link_range session::find_links(endpoint::state mask)  const {
     link_range r(connection().find_links(mask));

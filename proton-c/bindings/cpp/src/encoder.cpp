@@ -48,19 +48,19 @@ void check(int result, pn_data_t* data) {
 }
 
 bool encoder::encode(char* buffer, size_t& size) {
-    save_state ss(*this); // In case of error
-    ssize_t result = pn_data_encode(*this, buffer, size);
+    save_state ss(pn_object()); // In case of error
+    ssize_t result = pn_data_encode(pn_object(), buffer, size);
     if (result == PN_OVERFLOW) {
-        result = pn_data_encoded_size(*this);
+        result = pn_data_encoded_size(pn_object());
         if (result >= 0) {
             size = result;
             return false;
         }
     }
-    check(result, *this);
+    check(result, pn_object());
     size = result;
     ss.cancel();                // Don't restore state, all is well.
-    pn_data_clear(*this);
+    pn_data_clear(pn_object());
     return true;
 }
 
@@ -78,23 +78,23 @@ std::string encoder::encode() {
     return s;
 }
 
-data encoder::data() { return proton::data(*this); }
+data encoder::data() { return proton::data(pn_object()); }
 
 encoder operator<<(encoder e, const start& s) {
     switch (s.type) {
-      case ARRAY: pn_data_put_array(e, s.is_described, pn_type_t(s.element)); break;
-      case MAP: pn_data_put_map(e); break;
-      case LIST: pn_data_put_list(e); break;
-      case DESCRIBED: pn_data_put_described(e); break;
+      case ARRAY: pn_data_put_array(e.pn_object(), s.is_described, pn_type_t(s.element)); break;
+      case MAP: pn_data_put_map(e.pn_object()); break;
+      case LIST: pn_data_put_list(e.pn_object()); break;
+      case DESCRIBED: pn_data_put_described(e.pn_object()); break;
       default:
         throw encode_error(MSG("" << s.type << " is not a container type"));
     }
-    pn_data_enter(e);
+    pn_data_enter(e.pn_object());
     return e;
 }
 
 encoder operator<<(encoder e, finish) {
-    pn_data_exit(e);
+    pn_data_exit(e.pn_object());
     return e;
 }
 
@@ -108,33 +108,33 @@ encoder insert(encoder e, pn_data_t* data, T& value, int (*put)(pn_data_t*, U)) 
 }
 }
 
-encoder operator<<(encoder e, amqp_null) { pn_data_put_null(e); return e; }
-encoder operator<<(encoder e, amqp_boolean value) { return insert(e, e, value, pn_data_put_bool); }
-encoder operator<<(encoder e, amqp_ubyte value) { return insert(e, e, value, pn_data_put_ubyte); }
-encoder operator<<(encoder e, amqp_byte value) { return insert(e, e, value, pn_data_put_byte); }
-encoder operator<<(encoder e, amqp_ushort value) { return insert(e, e, value, pn_data_put_ushort); }
-encoder operator<<(encoder e, amqp_short value) { return insert(e, e, value, pn_data_put_short); }
-encoder operator<<(encoder e, amqp_uint value) { return insert(e, e, value, pn_data_put_uint); }
-encoder operator<<(encoder e, amqp_int value) { return insert(e, e, value, pn_data_put_int); }
-encoder operator<<(encoder e, amqp_char value) { return insert(e, e, value, pn_data_put_char); }
-encoder operator<<(encoder e, amqp_ulong value) { return insert(e, e, value, pn_data_put_ulong); }
-encoder operator<<(encoder e, amqp_long value) { return insert(e, e, value, pn_data_put_long); }
-encoder operator<<(encoder e, amqp_timestamp value) { return insert(e, e, value, pn_data_put_timestamp); }
-encoder operator<<(encoder e, amqp_float value) { return insert(e, e, value, pn_data_put_float); }
-encoder operator<<(encoder e, amqp_double value) { return insert(e, e, value, pn_data_put_double); }
-encoder operator<<(encoder e, amqp_decimal32 value) { return insert(e, e, value, pn_data_put_decimal32); }
-encoder operator<<(encoder e, amqp_decimal64 value) { return insert(e, e, value, pn_data_put_decimal64); }
-encoder operator<<(encoder e, amqp_decimal128 value) { return insert(e, e, value, pn_data_put_decimal128); }
-encoder operator<<(encoder e, amqp_uuid value) { return insert(e, e, value, pn_data_put_uuid); }
-encoder operator<<(encoder e, amqp_string value) { return insert(e, e, value, pn_data_put_string); }
-encoder operator<<(encoder e, amqp_symbol value) { return insert(e, e, value, pn_data_put_symbol); }
-encoder operator<<(encoder e, amqp_binary value) { return insert(e, e, value, pn_data_put_binary); }
+encoder operator<<(encoder e, amqp_null) { pn_data_put_null(e.pn_object()); return e; }
+encoder operator<<(encoder e, amqp_boolean value) { return insert(e, e.pn_object(), value, pn_data_put_bool); }
+encoder operator<<(encoder e, amqp_ubyte value) { return insert(e, e.pn_object(), value, pn_data_put_ubyte); }
+encoder operator<<(encoder e, amqp_byte value) { return insert(e, e.pn_object(), value, pn_data_put_byte); }
+encoder operator<<(encoder e, amqp_ushort value) { return insert(e, e.pn_object(), value, pn_data_put_ushort); }
+encoder operator<<(encoder e, amqp_short value) { return insert(e, e.pn_object(), value, pn_data_put_short); }
+encoder operator<<(encoder e, amqp_uint value) { return insert(e, e.pn_object(), value, pn_data_put_uint); }
+encoder operator<<(encoder e, amqp_int value) { return insert(e, e.pn_object(), value, pn_data_put_int); }
+encoder operator<<(encoder e, amqp_char value) { return insert(e, e.pn_object(), value, pn_data_put_char); }
+encoder operator<<(encoder e, amqp_ulong value) { return insert(e, e.pn_object(), value, pn_data_put_ulong); }
+encoder operator<<(encoder e, amqp_long value) { return insert(e, e.pn_object(), value, pn_data_put_long); }
+encoder operator<<(encoder e, amqp_timestamp value) { return insert(e, e.pn_object(), value, pn_data_put_timestamp); }
+encoder operator<<(encoder e, amqp_float value) { return insert(e, e.pn_object(), value, pn_data_put_float); }
+encoder operator<<(encoder e, amqp_double value) { return insert(e, e.pn_object(), value, pn_data_put_double); }
+encoder operator<<(encoder e, amqp_decimal32 value) { return insert(e, e.pn_object(), value, pn_data_put_decimal32); }
+encoder operator<<(encoder e, amqp_decimal64 value) { return insert(e, e.pn_object(), value, pn_data_put_decimal64); }
+encoder operator<<(encoder e, amqp_decimal128 value) { return insert(e, e.pn_object(), value, pn_data_put_decimal128); }
+encoder operator<<(encoder e, amqp_uuid value) { return insert(e, e.pn_object(), value, pn_data_put_uuid); }
+encoder operator<<(encoder e, amqp_string value) { return insert(e, e.pn_object(), value, pn_data_put_string); }
+encoder operator<<(encoder e, amqp_symbol value) { return insert(e, e.pn_object(), value, pn_data_put_symbol); }
+encoder operator<<(encoder e, amqp_binary value) { return insert(e, e.pn_object(), value, pn_data_put_binary); }
 
 encoder operator<<(encoder e, const value& v) {
-    pn_data_t *edata = e;
-    pn_data_t *vdata = v.decoder();
-    if (edata == vdata) throw encode_error("cannot insert into self");
-    check(pn_data_append(edata, vdata), edata);
+    data edata = e.data();
+    if (value(edata) == v) throw encode_error("cannot insert into self");
+    data vdata = v.decoder().data();
+    check(edata.append(vdata), e.pn_object());
     return e;
 }
 

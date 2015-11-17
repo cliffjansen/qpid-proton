@@ -26,33 +26,46 @@
 
 namespace proton {
 
-void data::operator delete(void *p) { ::pn_data_free(reinterpret_cast<pn_data_t*>(p)); }
+data& data::operator=(const data& x) { ::pn_data_copy(pn_object(), x.pn_object()); return *this; }
 
-data& data::operator=(const data& x) { ::pn_data_copy(*this, x); return *this; }
+void data::clear() { ::pn_data_clear(pn_object()); }
 
-void data::clear() { ::pn_data_clear(*this); }
+bool data::empty() const { return ::pn_data_size(pn_object()) == 0; }
 
-bool data::empty() const { return ::pn_data_size(*this) == 0; }
+uintptr_t data::point() const { return pn_data_point(pn_object()); }
+
+void data::restore(uintptr_t h) { pn_data_restore(pn_object(), h); }
+
+void data::narrow() { pn_data_narrow(pn_object()); }
+
+void data::widen() { pn_data_widen(pn_object()); }
+
+int data::append(data src) { return pn_data_append(pn_object(), src.pn_object());}
+
+int data::appendn(data src, int limit) { return pn_data_appendn(pn_object(), src.pn_object(), limit);}
+
+bool data::next() const { return pn_data_next(pn_object()); }
+
 
 namespace {
 struct save_state {
-    pn_data_t* data;
-    pn_handle_t handle;
-    save_state(pn_data_t* d) : data(d), handle(pn_data_point(d)) {}
-    ~save_state() { if (data) pn_data_restore(data, handle); }
+    data data_;
+    uintptr_t handle;
+    save_state(data d) : data_(d), handle(data_.point()) {}
+    ~save_state() { if (!!data_) data_.restore(handle); }
 };
 }
 
 std::ostream& operator<<(std::ostream& o, const data& d) {
-    save_state s(d);
+    save_state s(d.pn_object());
     d.decoder().rewind();
-    return o << inspectable(d);
+    return o << inspectable(d.pn_object());
 }
 
-data::data() : object(pn_data(0)) { decref(object_); }
+data::data() : object(pn_data(0)) { pn_decref(pn_object()); }
 
-encoder data::encoder() { return proton::encoder(*this); }
-decoder data::decoder() { return proton::decoder(*this); }
+encoder data::encoder() { return proton::encoder(pn_object()); }
+decoder data::decoder() { return proton::decoder(pn_object()); }
 
 type_id data::type() const { return decoder().type(); }
 

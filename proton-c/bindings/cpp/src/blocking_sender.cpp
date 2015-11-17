@@ -30,9 +30,9 @@ namespace proton {
 
 namespace {
 struct delivery_settled : public blocking_connection_impl::condition {
-    delivery_settled(pn_delivery_t *d) : pn_delivery(d) {}
-    bool operator()() const { return pn_delivery_settled(pn_delivery); }
-    pn_delivery_t *pn_delivery;
+    delivery_settled(delivery d) : pn_delivery(d) {}
+    bool operator()() const { return pn_delivery.settled(); }
+    delivery pn_delivery;
 };
 } // namespace
 

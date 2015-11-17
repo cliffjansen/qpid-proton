@@ -44,10 +44,11 @@ class value : public comparable<value> {
   public:
     PN_CPP_EXTERN value();
     PN_CPP_EXTERN value(const value& x);
+    // TODO: Should enumerate specifically all the pointer types that can convert to value
+    // to avoid accidental conversions to bool this will require enable_if<> or the like
     template <class T> value(const T& x) { data_ = x; }
 
     PN_CPP_EXTERN value& operator=(const value& x);
-    PN_CPP_EXTERN value& operator=(const data& x);
     template <class T> value& operator=(const T& x) { data_ = x; return *this; }
 
     PN_CPP_EXTERN void clear();

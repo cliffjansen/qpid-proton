@@ -33,21 +33,21 @@ namespace proton {
 
 namespace {
 struct link_opened : public blocking_connection_impl::condition {
-    link_opened(pn_link_t *l) : pn_link(l) {}
-    bool operator()() const { return !(pn_link_state(pn_link) & PN_REMOTE_UNINIT); }
-    pn_link_t *pn_link;
+    link_opened(link l) : pn_link(l) {}
+    bool operator()() const { return !(pn_link.state() & PN_REMOTE_UNINIT); }
+    link pn_link;
 };
 
 struct link_closed : public blocking_connection_impl::condition {
-    link_closed(pn_link_t *l) : pn_link(l) {}
-    bool operator()() const { return (pn_link_state(pn_link) & PN_REMOTE_CLOSED); }
-    pn_link_t *pn_link;
+    link_closed(link l) : pn_link(l) {}
+    bool operator()() const { return (pn_link.state() & PN_REMOTE_CLOSED); }
+    link pn_link;
 };
 
 struct link_not_open : public blocking_connection_impl::condition {
-    link_not_open(pn_link_t *l) : pn_link(l) {}
-    bool operator()() const { return !(pn_link_state(pn_link) & PN_REMOTE_ACTIVE); }
-    pn_link_t *pn_link;
+    link_not_open(link l) : pn_link(l) {}
+    bool operator()() const { return !(pn_link.state() & PN_REMOTE_ACTIVE); }
+    link pn_link;
 };
 
 } // namespace
@@ -69,8 +69,7 @@ void blocking_link::wait_for_closed() {
 }
 
 void blocking_link::check_closed() {
-    pn_link_t * pn_link = link_;
-    if (pn_link_state(pn_link) & PN_REMOTE_CLOSED) {
+    if (link_.state() & PN_REMOTE_CLOSED) {
         link_.close();
         throw error(MSG("Link detached: " << link_.name()));
     }

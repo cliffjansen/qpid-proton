@@ -139,7 +139,7 @@ class encoder : public object<pn_data_t> {
   friend PN_CPP_EXTERN encoder operator<<(encoder, amqp_symbol);
   friend PN_CPP_EXTERN encoder operator<<(encoder, amqp_binary);
   friend PN_CPP_EXTERN encoder operator<<(encoder, const message_id&);
-  friend PN_CPP_EXTERN encoder operator<<(encoder, const class data&);
+  friend PN_CPP_EXTERN encoder operator<<(encoder, const value&);
     ///@}
 
     /**

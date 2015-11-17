@@ -32,8 +32,6 @@ value::value(const value& x) { data_ = x.data_; }
 
 value& value::operator=(const value& x) { data_ = x.data_; return *this; }
 
-value& value::operator=(const data& x) { data_ = x; return *this; }
-
 void value::clear() { data_.clear(); }
 
 bool value::empty() const { return data_.empty(); }

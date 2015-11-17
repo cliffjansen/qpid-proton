@@ -53,6 +53,7 @@ set(qpid-proton-cpp-source
   src/messaging_adapter.cpp
   src/messaging_event.cpp
   src/messaging_handler.cpp
+  src/object.cpp
   src/proton_bits.cpp
   src/proton_event.cpp
   src/proton_handler.cpp

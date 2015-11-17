@@ -25,64 +25,70 @@
 
 namespace proton {
 
-///@cond INTERNAL
-
-// Default refcounting uses pn_incref, pn_decref. Other types must define
-// their own incref/decref overloads.
-void incref(const void*);
-void decref(const void*);
-
-///@endcond
-
 /**
  * Base class for proton object types
  *
  * Automatically perform memory management for pn_object based types.
+ *
+ * Note that for the memory management to work correctly no class
+ * inheriting from this should define any data members of its own.
+ * 
+ * This is ok because the entire purpose of this class is to provide
+ * and manage the underlying pointer to the proton-c object.
+ * 
+ * So any class using this one needs to be merely a thin wrapping of
+ * the proton-c object with no data members of it's own. Anything that internally
+ * needs extra data members and a proton-c object must use an inheritor of
+ * object<> as a data member - it must not inherit and add data members.
+ * 
  */
-template <class T> class object {
+class object_base {
   public:
-    typedef T ptr_type;
+    object_base() : object_(0) {}
+    object_base(void* o) : object_(o) { incref(); }
+    object_base(const object_base& o) : object_(o.object_) { incref(); }
 
-    object() : object_(0) {}
-    object(T* o) : object_(o) { incref(object_); }
-    object(const object& o) : object_(o.object_) { incref(object_); }
-    ~object() { decref(object_); };
+    #ifdef PN_HAS_CPP11
+    object_base(object_base&& o) { *this = std::move(o); }
+    #endif
 
-    object& operator=(const object& o) 
-    { decref(object_); object_ = o.object_; incref(object_); return *this; }
+    ~object_base() { decref(); };
 
-#ifdef PN_HAS_CPP11
-    // Move constructor/assignment operator
-    object(object&& o) : object_(o.object_) { o.object_ = nullptr; }
-    object& operator=(object&& o)
-    { decref(object_); object_ = o.object_; o.object_ = nullptr; return *this; }
-#endif
+    object_base& operator=(object_base o)
+    { std::swap(object_, o.object_); return *this; }
 
-    void swap(object& o) { std::swap(object_, o.object_); }
+    bool operator!() const { return !object_; }
 
-    operator T* () const { return object_; }
-    //T* operator->() const { return object_; }
-    //T& operator*() const { return *object_; }
-    //operator bool() const { return !!object_; }
-    //bool operator!() const { return !object_; }
-  protected:
-    T* object_;
+  private:
+    void incref() const;
+    void decref() const;
 
-    template <class U, class V>
-    friend bool operator==(const object<U>&, const object<V>&);
+  private:
+    void* object_;
+
+  template <class T>
+  friend class object;
+  friend bool operator==(const object_base&, const object_base&);
 };
 
-template <class T, class U> bool operator==(const object<T>& o1, const object<U>& o2) {
+template <class T>
+class object : public object_base {
+  public:
+    object(T* o) : object_base(o) {};
+
+  protected:
+    T* pn_object() const { return static_cast<T*>(object_); }
+};
+
+inline
+bool operator==(const object_base& o1, const object_base& o2) {
     return o1.object_==o2.object_;
 }
 
-template <class T, class U> bool operator!=(const object<T>& o1, const object<U> o2) {
+inline
+bool operator!=(const object_base& o1, const object_base& o2) {
     return !(o1==o2);
 }
-
-// template <class T, class U> bool operator<(const object<T>& o1, const object<U>& o2) {
-//   return o1.object_<o2.object_;
-// }
 
 }
 #endif // OBJECT_HPP

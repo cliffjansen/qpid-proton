@@ -277,12 +277,12 @@ void message::decode(const std::string &s) {
 
 void message::decode(proton::link link, proton::delivery delivery) {
     std::string buf;
-    buf.resize(pn_delivery_pending(delivery));
-    ssize_t n = pn_link_recv(link, (char *) buf.data(), buf.size());
+    buf.resize(delivery.pending());
+    ssize_t n = link.recv((char *) buf.data(), buf.size());
     if (n != (ssize_t) buf.size()) throw error(MSG("link read failure"));
     clear();
     decode(buf);
-    pn_link_advance(link);
+    link.advance();
 }
 
 }

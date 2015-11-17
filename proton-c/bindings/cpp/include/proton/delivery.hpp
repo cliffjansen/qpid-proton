@@ -1,3 +1,4 @@
+
 #ifndef PROTON_CPP_DELIVERY_H
 #define PROTON_CPP_DELIVERY_H
 
@@ -110,6 +111,11 @@ class delivery : public object<pn_delivery_t> {
      * Get the remote disposition state for a delivery.
      */
     PN_CPP_EXTERN state remote_state() const;
+
+    /**
+     * Get the size of the current delivery
+     */
+    PN_CPP_EXTERN size_t pending() const;
 };
 
 }

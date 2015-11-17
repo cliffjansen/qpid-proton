@@ -1,5 +1,4 @@
 /*
- *
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -16,15 +15,19 @@
  * KIND, either express or implied.  See the License for the
  * specific language governing permissions and limitations
  * under the License.
- *
  */
 
-#include "proton/acceptor.hpp"
-#include "proton/error.hpp"
-#include "msg.hpp"
+#include "proton/object.hpp"
+#include <proton/object.h>
 
 namespace proton {
 
-void acceptor::close() { pn_acceptor_close(pn_object()); }
+void object_base::incref() const {
+    if (object_) ::pn_incref(const_cast<void*>(object_));
+}
+
+void object_base::decref() const {
+    if (object_) ::pn_decref(const_cast<void*>(object_));
+}
 
 }

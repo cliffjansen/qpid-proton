@@ -34,6 +34,7 @@ struct pn_connection_t;
 
 namespace proton {
 
+class connection_context;
 class handler;
 class engine;
 
@@ -42,6 +43,9 @@ class connection : public object<pn_connection_t>, endpoint
 {
   public:
     connection(pn_connection_t* c=0) : object(c) {}
+
+    /// Get the connection context object from the connection
+    PN_CPP_EXTERN connection_context& context() const;
 
     /// Get the event_loop, can be a container or an engine.
     PN_CPP_EXTERN class event_loop &event_loop() const;
@@ -55,9 +59,15 @@ class connection : public object<pn_connection_t>, endpoint
     /// Return the AMQP host name for the connection.
     PN_CPP_EXTERN std::string host() const;
 
+    /// Set the AMQP host name for the connection
+    PN_CPP_EXTERN void host(const std::string& h);
+
     /// Return the container-ID for the connection. All connections have a container_id,
     /// even if they don't have a container event_loop.
     PN_CPP_EXTERN std::string container_id() const;
+
+    // Set the container-ID for the connection
+    PN_CPP_EXTERN void container_id(const std::string& id);
 
     /** Initiate local open, not complete till messaging_handler::on_connection_opened()
      * or proton_handler::on_connection_remote_open()
@@ -69,11 +79,15 @@ class connection : public object<pn_connection_t>, endpoint
      */
     PN_CPP_EXTERN void close();
 
+    /** Release link and session resources of this connection
+     */
+    PN_CPP_EXTERN void release();
+
     /** Create a new session */
-    PN_CPP_EXTERN class session open_session();
+    PN_CPP_EXTERN session open_session();
 
     /** Default session is created on first call and re-used for the lifetime of the connection */
-    PN_CPP_EXTERN class session default_session();
+    PN_CPP_EXTERN session default_session();
 
     /** Create a sender on default_session() with target=addr and optional handler h */
     PN_CPP_EXTERN sender open_sender(const std::string &addr, handler *h=0);

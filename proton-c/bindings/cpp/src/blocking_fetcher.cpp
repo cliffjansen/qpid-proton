@@ -36,7 +36,7 @@ void blocking_fetcher::on_message(event &e) {
 
 void blocking_fetcher::on_link_error(event &e) {
     link lnk = e.link();
-    if (pn_link_state(lnk) & PN_LOCAL_ACTIVE) {
+    if (lnk.state() & PN_LOCAL_ACTIVE) {
         lnk.close();
         throw error(MSG("Link detached: " << lnk.name()));
     }

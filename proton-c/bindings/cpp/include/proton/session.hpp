@@ -80,6 +80,9 @@ class session : public object<pn_session_t>, public endpoint
     /** Get the endpoint state */
     PN_CPP_EXTERN endpoint::state state() const;
 
+    /** Navigate the sessions in a connection - get next session with endpoint state*/
+    PN_CPP_EXTERN session next(endpoint::state) const;
+
     /** Return the links on this session matching the state mask. */
     PN_CPP_EXTERN link_range find_links(endpoint::state mask) const;
 };

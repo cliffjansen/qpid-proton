@@ -62,6 +62,9 @@ class link : public object<pn_link_t> , public endpoint
     /** Credit available on the link */
     PN_CPP_EXTERN int credit() const;
 
+    /** Grant credit to the link */
+    PN_CPP_EXTERN void flow(int credit);
+
     /** Local source of the link. */
     PN_CPP_EXTERN terminus source() const;
     /** Local target of the link. */
@@ -88,6 +91,15 @@ class link : public object<pn_link_t> , public endpoint
 
     /** Get the endpoint state */
     PN_CPP_EXTERN endpoint::state state() const;
+
+    /** Get message data from current delivery on link */
+    PN_CPP_EXTERN ssize_t recv(char* buffer, size_t size);
+
+    /** Advance the link one delivery */
+    PN_CPP_EXTERN bool advance();
+
+    /** Navigate the links in a connection - get next link with state */
+    PN_CPP_EXTERN link next(endpoint::state) const;
 };
 
 /// An iterator for links.
