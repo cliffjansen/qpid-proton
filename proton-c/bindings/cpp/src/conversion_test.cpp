@@ -28,48 +28,17 @@
 using namespace std;
 using namespace proton;
 
-template <class connection_ptr, class session_ptr>
-void test_owning() {
-
-    connection_ptr conn(pn_connection());
-    session s = conn->default_session();
-    session_ptr p = s;
-    session_ptr p2 = s;
-}
-
-template <class connection_ptr, class session_ptr>
 void test_counted() {
-    connection_ptr conn(pn_connection());
+    connection conn(connection::create());
+
     session s = conn.default_session();
-    session_ptr p = s;
-    session_ptr p2 = s;
+    session p = s;
+    session p2 = s;
 }
 
-#undef PN_HAS_STD_PTR
-#undef PN_HAS_BOOST
 int main(int argc, char** argv) {
     int failed = 0;
-    failed += run_test(&test_counted<connection, session>, "counted");
+    failed += run_test(&test_counted, "counted");
 
-#if PN_HAS_STD_PTR
-    failed += run_test(&test_owning<
-                       std::shared_ptr<connection>,
-                       std::shared_ptr<session> >,
-                       "std::shared");
-    failed += run_test(&test_owning<
-                       std::unique_ptr<connection>,
-                       std::unique_ptr<session> >,
-                       "std::unique");
-#endif
-#if PN_HAS_BOOST
-    failed += run_test(&test_owning<
-                       boost::shared_ptr<connection>,
-                       boost::shared_ptr<session> >,
-                       "boost::shared");
-    failed += run_test(&test_counted<
-                       boost::intrusive_ptr<connection>,
-                       boost::intrusive_ptr<session> >,
-                       "boost::intrusive");
-#endif
     return failed;
 }

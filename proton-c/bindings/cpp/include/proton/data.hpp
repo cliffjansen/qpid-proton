@@ -39,8 +39,9 @@ class data;
  */
 class data : public object<pn_data_t> {
   public:
-    data();
     data(pn_data_t* d) : object(d) {}
+    data(owned_object<pn_data_t> d) : object(d) {}
+    static owned_object<pn_data_t> create();
 
     PN_CPP_EXTERN data& operator=(const data&);
     template<class T> data& operator=(const T &t) {
@@ -85,8 +86,6 @@ class data : public object<pn_data_t> {
 
     PN_CPP_EXTERN bool operator==(const data& x) const;
     PN_CPP_EXTERN bool operator<(const data& x) const;
-
-    PN_CPP_EXTERN void operator delete(void *);
 
     /** Human readable representation of data. */
   friend PN_CPP_EXTERN std::ostream& operator<<(std::ostream&, const data&);

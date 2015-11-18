@@ -62,7 +62,7 @@ std::ostream& operator<<(std::ostream& o, const data& d) {
     return o << inspectable(d.pn_object());
 }
 
-data::data() : object(pn_data(0)) { pn_decref(pn_object()); }
+owned_object<pn_data_t> data::create() { return pn_data(0); }
 
 encoder data::encoder() { return proton::encoder(pn_object()); }
 decoder data::decoder() { return proton::decoder(pn_object()); }

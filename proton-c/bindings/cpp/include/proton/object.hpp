@@ -45,7 +45,7 @@ namespace proton {
 class object_base {
   public:
     object_base() : object_(0) {}
-    object_base(void* o) : object_(o) { incref(); }
+    object_base(void* o) : object_(o) {}
     object_base(const object_base& o) : object_(o.object_) { incref(); }
 
     #ifdef PN_HAS_CPP11
@@ -63,20 +63,38 @@ class object_base {
     void incref() const;
     void decref() const;
 
-  private:
     void* object_;
 
   template <class T>
   friend class object;
+  template <class T>
+  friend class owned_object;
   friend bool operator==(const object_base&, const object_base&);
+};
+
+template <class T>
+class owned_object : public object_base {
+  public:
+    owned_object(T* o) : object_base(o) {};
+
+  protected:
+    T* pn_object() const { return static_cast<T*>(object_); }
+
+  template <class U>
+  friend class object;
 };
 
 template <class T>
 class object : public object_base {
   public:
-    object(T* o) : object_base(o) {};
+    object(T* o, bool take_own=false) : object_base(o) { if (!take_own) incref(); };
+    object(owned_object<T> o) : object_base(o.object_) { o.object_=0; };
+
+    object& operator=(owned_object<T> o)
+    { object_ = o.object_; o = 0; return *this; }
 
   protected:
+    static const bool take_ownership = true;
     T* pn_object() const { return static_cast<T*>(object_); }
 };
 

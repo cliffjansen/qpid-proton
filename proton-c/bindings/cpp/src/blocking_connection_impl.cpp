@@ -33,15 +33,15 @@ namespace proton {
 
 namespace {
 struct connection_opening : public blocking_connection_impl::condition {
-    connection_opening(connection c) : pn_connection(c) {}
-    bool operator()() const { return (pn_connection.state()) & PN_REMOTE_UNINIT; }
-    connection pn_connection;
+    connection_opening(const connection& c) : connection_(c) {}
+    bool operator()() const { return (connection_.state()) & PN_REMOTE_UNINIT; }
+    const connection& connection_;
 };
 
 struct connection_closed : public blocking_connection_impl::condition {
-    connection_closed(connection c) : pn_connection(c) {}
-    bool operator()() const { return !(pn_connection.state() & PN_REMOTE_ACTIVE); }
-    connection pn_connection;
+    connection_closed(const connection& c) : connection_(c) {}
+    bool operator()() const { return !(connection_.state() & PN_REMOTE_ACTIVE); }
+    const connection& connection_;
 };
 }
 

@@ -26,9 +26,9 @@
 
 namespace proton {
 
-value::value() {}
+value::value() : data_(data::create()) {}
 
-value::value(const value& x) { data_ = x.data_; }
+value::value(const value& x) : data_(data::create()) { data_ = x.data_; }
 
 value& value::operator=(const value& x) { data_ = x.data_; return *this; }
 
