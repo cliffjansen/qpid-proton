@@ -20,6 +20,7 @@
  */
 
 #include "proton/config.hpp"
+#include "proton/export.hpp"
 
 #include <memory>
 
@@ -60,8 +61,8 @@ class object_base {
     bool operator!() const { return !object_; }
 
   private:
-    void incref() const;
-    void decref() const;
+    PN_CPP_EXTERN void incref() const;
+    PN_CPP_EXTERN void decref() const;
 
     void* object_;
 
