@@ -41,9 +41,11 @@ class data : public object<pn_data_t> {
   public:
     data(pn_data_t* d) : object(d) {}
     data(owned_object<pn_data_t> d) : object(d) {}
-    static owned_object<pn_data_t> create();
+
+    PN_CPP_EXTERN static owned_object<pn_data_t> create();
 
     PN_CPP_EXTERN data& operator=(const data&);
+
     template<class T> data& operator=(const T &t) {
         clear(); encoder() << t; return *this;
     }

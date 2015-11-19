@@ -45,7 +45,7 @@ class connection : public object<pn_connection_t>, endpoint
     connection(pn_connection_t* c=0) : object(c) {}
     connection(owned_object<pn_connection_t> c) : object(c) {}
 
-    static owned_object<pn_connection_t> create();
+    PN_CPP_EXTERN static owned_object<pn_connection_t> create();
 
     /// Get the connection context object from the connection
     PN_CPP_EXTERN connection_context& context() const;
