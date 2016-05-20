@@ -27,6 +27,7 @@
 #include "./value.hpp"
 #include "./terminus.hpp"
 #include "./codec/map.hpp"
+#include "proton/cached_map.hpp"
 
 #include <string>
 
@@ -42,7 +43,7 @@ class source : public terminus {
   public:
     /// **Experimental** - A map of AMQP symbol keys and filter
     /// specifiers.
-    typedef std::map<symbol, value> filter_map;
+    typedef cached_map<symbol, value> filter_map;
 
     /// Create an empty source.
     source() : terminus() {}
@@ -69,7 +70,7 @@ class source : public terminus {
     PN_CPP_EXTERN enum distribution_mode distribution_mode() const;
 
     /// **Experimental** - Obtain the set of message filters.
-    PN_CPP_EXTERN filter_map filters() const;
+    PN_CPP_EXTERN const filter_map filters() const;
 
   private:
     source(pn_terminus_t* t);

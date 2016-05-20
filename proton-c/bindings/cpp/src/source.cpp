@@ -26,6 +26,7 @@
 #include "proton/receiver.hpp"
 
 #include "proton_bits.hpp"
+#include "data_private.hpp"
 
 namespace proton {
 
@@ -47,13 +48,9 @@ enum source::distribution_mode source::distribution_mode() const {
   return (enum distribution_mode)pn_terminus_get_distribution_mode(object_);
 }
 
-source::filter_map source::filters() const {
-    codec::decoder d(make_wrapper(pn_terminus_filter(object_)));
+const source::filter_map source::filters() const {
     filter_map map;
-    if (!d.empty()) {
-        d.rewind();
-        d >> map;
-    }
+    internal::data_private::set_data(map.value(), pn_terminus_filter(object_));
     return map;
 }
 

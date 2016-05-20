@@ -29,6 +29,7 @@
 #include "./message_id.hpp"
 #include "./internal/pn_unique_ptr.hpp"
 #include "./value.hpp"
+#include "./cached_map.hpp"
 
 #include <string>
 #include <vector>
@@ -50,11 +51,11 @@ class message {
   public:
     /// **Experimental** - A map of string keys and AMQP scalar
     /// values.
-    typedef std::map<std::string, scalar> property_map;
+    typedef cached_map<std::string, scalar> property_map;
 
     /// **Experimental** - A map of AMQP annotation keys and AMQP
     /// values.
-    typedef std::map<annotation_key, value> annotation_map;
+    typedef cached_map<annotation_key, value> annotation_map;
 
     /// Create an empty message.
     PN_CPP_EXTERN message();

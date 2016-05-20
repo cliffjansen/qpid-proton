@@ -25,6 +25,7 @@
 #include "proton/target.hpp"
 
 #include "proton_bits.hpp"
+#include "data_private.hpp"
 
 #include <limits>
 
@@ -101,10 +102,10 @@ class source_options::impl {
         node_expiry(s, expiry_policy, timeout);
         if (distribution_mode.set)
           pn_terminus_set_distribution_mode(unwrap(s), pn_distribution_mode_t(distribution_mode.value));
-        if (filters.set && !filters.value.empty()) {
-            // Applied at most once via source_option.  No need to clear.
-            codec::encoder e(make_wrapper(pn_terminus_filter(unwrap(s))));
-            e << filters.value;
+        if (filters.set && !filters.value.value().empty()) {
+            value fv;
+            internal::data_private::set_data(fv, pn_terminus_filter(unwrap(s)));
+            fv = filters.value.value();
         }
     }
 };
@@ -126,7 +127,11 @@ source_options& source_options::durability_mode(enum source::durability_mode m) 
 source_options& source_options::timeout(duration d) { impl_->timeout = d; return *this; }
 source_options& source_options::expiry_policy(enum source::expiry_policy m) { impl_->expiry_policy = m; return *this; }
 source_options& source_options::distribution_mode(enum source::distribution_mode m) { impl_->distribution_mode = m; return *this; }
-source_options& source_options::filters(const source::filter_map &map) { impl_->filters = map; return *this; }
+source_options& source_options::filters(const source::filter_map &map) {
+    // TODO: throw error if map is malformed
+    impl_->filters = map;
+    return *this;
+}
 
 void source_options::apply(source& s) const { impl_->apply(s); }
 

@@ -37,17 +37,17 @@ namespace {
     // (http://www.amqp.org/specification/1.0/filters)
 
     void set_filter(proton::source_options &opts, const std::string& selector_str) {
-        proton::source::filter_map map;
-        proton::symbol filter_key("selector");
+        // AMQP described types will be available shortly.  For now, encode manually.
+        // The value is a specific AMQP "described type": binary string with symbolic descriptor.
         proton::value filter_value;
-        // The value is a specific AMQP "described type": binary string with symbolic descriptor
         proton::codec::encoder enc(filter_value);
         enc << proton::codec::start::described()
             << proton::symbol("apache.org:selector-filter:string")
             << proton::binary(selector_str)
             << proton::codec::finish();
-        // In our case, the map has this one element
-        map[filter_key] = filter_value;
+
+        proton::source::filter_map map;
+        map.set("selector", filter_value);
         opts.filters(map);
     }
 }

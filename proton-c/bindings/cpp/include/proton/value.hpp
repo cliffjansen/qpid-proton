@@ -34,6 +34,7 @@ namespace proton {
 class message;
 
 namespace internal {
+class data_private;
 
 class value_base;
 PN_CPP_EXTERN std::ostream& operator<<(std::ostream& o, const value_base& x);
@@ -119,6 +120,7 @@ class value : public internal::value_base, private internal::comparable<value> {
 
     /// @cond INTERNAL
     PN_CPP_EXTERN explicit value(const codec::data&);
+  friend class internal::data_private;
     /// @endcond
 };
 

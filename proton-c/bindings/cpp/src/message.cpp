@@ -19,20 +19,22 @@
  *
  */
 
+#include "proton/message.hpp"
 #include "proton/delivery.hpp"
 #include "proton/error.hpp"
 #include "proton/link.hpp"
-#include "proton/message.hpp"
 #include "proton/message_id.hpp"
 #include "proton/receiver.hpp"
 #include "proton/sender.hpp"
 #include "proton/timestamp.hpp"
+#include "proton/codec/data.hpp"
 
 #include <proton/message.h>
 
 #include "msg.hpp"
 #include "proton_bits.hpp"
 #include "types_internal.hpp"
+#include "data_private.hpp"
 
 #include <string>
 #include <algorithm>
@@ -53,8 +55,20 @@ message& message::operator=(message&& m) {
 
 message::message(const value& x) : pn_msg_(0) { body() = x; }
 
+template <class CM> static void detach_map(CM& map) {
+    // Properties and annotations are cleaned up by pn_free, not
+    // pn_decref, so these counts must be released before the
+    // message finalizes.
+    codec::data &d(internal::data_private::get_data(map.value()));
+    if (!!d)
+        d = codec::data();
+}
+
 message::~message() {
-    body_.data_ = codec::data();      // Must release body before pn_message_free
+    body_.data_ = codec::data();         // Must release body before pn_message_free
+    detach_map(application_properties_); // These too
+    detach_map(message_annotations_);
+    detach_map(delivery_annotations_);
     pn_message_free(pn_msg_);
 }
 
@@ -209,62 +223,55 @@ void message::body(const value& x) { body() = x; }
 const value& message::body() const { pn_msg(); return body_; }
 value& message::body() { pn_msg(); return body_; }
 
-// MAP CACHING: the properties and annotations maps can either be encoded in the
-// pn_message pn_data_t structures OR decoded as C++ map members of the message
-// but not both. At least one of the pn_data_t or the map member is always
-// empty, the non-empty one is the authority.
-
-// Decode a map on demand
-template<class M> M& get_map(pn_message_t* msg, pn_data_t* (*get)(pn_message_t*), M& map) {
-    codec::decoder d(make_wrapper(get(msg)));
-    if (map.empty() && !d.empty()) {
-        d.rewind();
-        d >> map;
-        d.clear();              // The map member is now the authority.
+template <class CM> static void ensure_map(pn_message_t* msg, pn_data_t* (*get)(pn_message_t*), CM& map) {
+    codec::data &d(internal::data_private::get_data(map.value()));
+    if (!d) {
+        internal::data_private::set_data(map.value(), get(msg));
     }
-    return map;
 }
 
-// Encode a map if necessary.
-template<class M> M& put_map(pn_message_t* msg, pn_data_t* (*get)(pn_message_t*), M& map) {
-    codec::encoder e(make_wrapper(get(msg)));
-    if (e.empty() && !map.empty()) {
-        e << map;
-        map.clear();            // The encoded pn_data_t  is now the authority.
-    }
-    return map;
+// Force the cached_map to uncache the map data into the message's pn_data_t.
+template<class CM> void sync_map(CM& map) {
+    if (!map.empty())
+        map.value();
 }
 
 message::property_map& message::properties() {
-    return get_map(pn_msg(), pn_message_properties, application_properties_);
+    ensure_map(pn_msg(), pn_message_properties, application_properties_);
+    return application_properties_;
 }
 
 const message::property_map& message::properties() const {
-    return get_map(pn_msg(), pn_message_properties, application_properties_);
+    ensure_map(pn_msg(), pn_message_properties, application_properties_);
+    return application_properties_;
 }
 
 
 message::annotation_map& message::message_annotations() {
-    return get_map(pn_msg(), pn_message_annotations, message_annotations_);
+    ensure_map(pn_msg(), pn_message_annotations, message_annotations_);
+    return message_annotations_;
 }
 
 const message::annotation_map& message::message_annotations() const {
-    return get_map(pn_msg(), pn_message_annotations, message_annotations_);
+    ensure_map(pn_msg(), pn_message_annotations, message_annotations_);
+    return message_annotations_;
 }
 
 
 message::annotation_map& message::delivery_annotations() {
-    return get_map(pn_msg(), pn_message_instructions, delivery_annotations_);
+    ensure_map(pn_msg(), pn_message_instructions, delivery_annotations_);
+    return delivery_annotations_;
 }
 
 const message::annotation_map& message::delivery_annotations() const {
-    return get_map(pn_msg(), pn_message_instructions, delivery_annotations_);
+    ensure_map(pn_msg(), pn_message_instructions, delivery_annotations_);
+    return delivery_annotations_;
 }
 
 void message::encode(std::vector<char> &s) const {
-    put_map(pn_msg(), pn_message_properties, application_properties_);
-    put_map(pn_msg(), pn_message_annotations, message_annotations_);
-    put_map(pn_msg(), pn_message_instructions, delivery_annotations_);
+    sync_map(application_properties_);
+    sync_map(message_annotations_);
+    sync_map(delivery_annotations_);
     size_t sz = std::max(s.capacity(), size_t(512));
     while (true) {
         s.resize(sz);
