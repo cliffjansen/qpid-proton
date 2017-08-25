@@ -25,6 +25,7 @@
 #include "proton/work_queue.hpp"
 #include "proton/message.hpp"
 #include "proton/internal/pn_unique_ptr.hpp"
+#include "proton/internal/connector.hpp"
 
 struct pn_record_t;
 struct pn_link_t;
@@ -36,6 +37,10 @@ namespace proton {
 
 class proton_handler;
 class reconnect_timer;
+
+namespace internal {
+class connector;
+}
 
 namespace io {class link_namer;}
 
@@ -90,8 +95,8 @@ class connection_context : public context {
     io::link_namer* link_gen;      // Link name generator.
 
     messaging_handler* handler;
-    internal::pn_unique_ptr<reconnect_timer> reconnect;
     listener_context* listener_context_;
+    internal::pn_unique_ptr<internal::connector> connector;
     work_queue work_queue_;
 };
 

@@ -32,6 +32,7 @@ set(qpid-proton-cpp-source
   src/map.cpp
   src/connection.cpp
   src/connection_options.cpp
+  src/connector.cpp
   src/container.cpp
   src/proactor_container_impl.cpp
   src/contexts.cpp
@@ -56,6 +57,7 @@ set(qpid-proton-cpp-source
   src/proton_bits.cpp
   src/receiver.cpp
   src/receiver_options.cpp
+  src/reconnect_options.cpp
   src/reconnect_timer.cpp
   src/sasl.cpp
   src/scalar_base.cpp

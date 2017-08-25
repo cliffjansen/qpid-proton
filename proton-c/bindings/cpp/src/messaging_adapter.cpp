@@ -292,6 +292,10 @@ void on_transport_closed(messaging_handler& handler, pn_event_t* event) {
 
     if (pn_condition_is_set(pn_transport_condition(tspt))) {
         handler.on_transport_error(t);
+        // TODO: some check as to whether user code is handling the error itself (error cleared?)
+        pn_connection_t *pnc = pn_transport_connection(tspt);
+        if (pnc && connection_context::get(pnc).connector.get())
+            connection_context::get(pnc).connector->reconnect_check();
     }
     handler.on_transport_close(t);
 }

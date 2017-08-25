@@ -164,28 +164,17 @@ proton::connection container::impl::connect_common(
     opts.update(user_opts);
     messaging_handler* mh = opts.handler();
 
-    proton::url url(addr);
     pn_connection_t *pnc = pn_connection();
     connection_context& cc(connection_context::get(pnc));
     cc.container = &container_;
     cc.handler = mh;
     cc.work_queue_ = new container::impl::connection_work_queue(*container_.impl_, pnc);
+    cc.connector.reset(new internal::connector(proactor_, pnc, opts, addr));
 
     pn_connection_set_container(pnc, id_.c_str());
-    pn_connection_set_hostname(pnc, url.host().c_str());
-    if (!url.user().empty())
-        pn_connection_set_user(pnc, url.user().c_str());
-    if (!url.password().empty())
-        pn_connection_set_password(pnc, url.password().c_str());
+    cc.connector->connect();
 
-    connection conn = make_wrapper(pnc);
-    conn.open(opts);
-    // Figure out correct string len then create connection address
-    int len = pn_proactor_addr(0, 0, url.host().c_str(), url.port().c_str());
-    std::vector<char> caddr(len+1);
-    pn_proactor_addr(&caddr[0], len+1, url.host().c_str(), url.port().c_str());
-    pn_proactor_connect(proactor_, pnc, &caddr[0]);
-    return conn;
+    return make_wrapper(pnc);
 }
 
 proton::returned<proton::connection> container::impl::connect(
@@ -398,7 +387,7 @@ bool container::impl::handle(pn_event_t* event) {
         if (cc.listener_context_) {
             cc.listener_context_->connection_options_->apply_bound(conn);
         } else {
-            client_connection_options_.apply_bound(conn);
+            cc.connector->options.apply_bound(conn);
         }
 
         return false;

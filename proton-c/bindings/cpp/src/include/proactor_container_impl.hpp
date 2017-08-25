@@ -64,6 +64,10 @@ struct pn_event_t;
 
 namespace proton {
 
+namespace internal {
+class connector;
+}
+
 class container::impl {
   public:
     impl(container& c, const std::string& id, messaging_handler* = 0);
@@ -138,6 +142,7 @@ class container::impl {
 
     bool auto_stop_;
     bool stopping_;
+    friend class connector;
 };
 
 template <class T>

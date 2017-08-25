@@ -23,6 +23,7 @@
 #include "proton/connection_options.hpp"
 #include "proton/messaging_handler.hpp"
 #include "proton/reconnect_timer.hpp"
+#include "proton/reconnect_options.hpp"
 #include "proton/transport.hpp"
 #include "proton/ssl.hpp"
 #include "proton/sasl.hpp"
@@ -57,7 +58,6 @@ class connection_options::impl {
     option<std::string> virtual_host;
     option<std::string> user;
     option<std::string> password;
-    option<reconnect_timer> reconnect;
     option<class ssl_client_options> ssl_client_options;
     option<class ssl_server_options> ssl_server_options;
     option<bool> sasl_enabled;
@@ -65,6 +65,7 @@ class connection_options::impl {
     option<bool> sasl_allow_insecure_mechs;
     option<std::string> sasl_config_name;
     option<std::string> sasl_config_path;
+    option<reconnect_options> reconnect;
 
     /*
      * There are three types of connection options: the handler
@@ -80,9 +81,8 @@ class connection_options::impl {
         bool uninit = c.uninitialized();
         if (!uninit) return;
 
-        bool outbound = !connection_context::get(pnc).listener_context_;
-        if (reconnect.set && outbound)
-            connection_context::get(pnc).reconnect.reset(new reconnect_timer(reconnect.value));
+        if (connection_context::get(pnc).connector.get())
+            connection_context::get(pnc).connector->reconnect = &reconnect.value;
         if (container_id.set)
             pn_connection_set_container(pnc, container_id.value.c_str());
         if (virtual_host.set)
@@ -147,7 +147,6 @@ class connection_options::impl {
         virtual_host.update(x.virtual_host);
         user.update(x.user);
         password.update(x.password);
-        reconnect.update(x.reconnect);
         ssl_client_options.update(x.ssl_client_options);
         ssl_server_options.update(x.ssl_server_options);
         sasl_enabled.update(x.sasl_enabled);
@@ -155,6 +154,7 @@ class connection_options::impl {
         sasl_allowed_mechs.update(x.sasl_allowed_mechs);
         sasl_config_name.update(x.sasl_config_name);
         sasl_config_path.update(x.sasl_config_path);
+        reconnect.update(x.reconnect);
     }
 
 };
@@ -187,7 +187,6 @@ connection_options& connection_options::container_id(const std::string &id) { im
 connection_options& connection_options::virtual_host(const std::string &id) { impl_->virtual_host = id; return *this; }
 connection_options& connection_options::user(const std::string &user) { impl_->user = user; return *this; }
 connection_options& connection_options::password(const std::string &password) { impl_->password = password; return *this; }
-connection_options& connection_options::reconnect(const reconnect_timer &rc) { impl_->reconnect = rc; return *this; }
 connection_options& connection_options::ssl_client_options(const class ssl_client_options &c) { impl_->ssl_client_options = c; return *this; }
 connection_options& connection_options::ssl_server_options(const class ssl_server_options &c) { impl_->ssl_server_options = c; return *this; }
 connection_options& connection_options::sasl_enabled(bool b) { impl_->sasl_enabled = b; return *this; }
@@ -195,6 +194,7 @@ connection_options& connection_options::sasl_allow_insecure_mechs(bool b) { impl
 connection_options& connection_options::sasl_allowed_mechs(const std::string &s) { impl_->sasl_allowed_mechs = s; return *this; }
 connection_options& connection_options::sasl_config_name(const std::string &n) { impl_->sasl_config_name = n; return *this; }
 connection_options& connection_options::sasl_config_path(const std::string &p) { impl_->sasl_config_path = p; return *this; }
+connection_options& connection_options::reconnect(reconnect_options &r) { impl_->reconnect = r; return *this; }
 
 void connection_options::apply_unbound(connection& c) const { impl_->apply_unbound(c); }
 void connection_options::apply_bound(connection& c) const { impl_->apply_bound(c); }

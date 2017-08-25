@@ -40,7 +40,7 @@ class listener;
 class receiver;
 class receiver_iterator;
 class receiver_options;
-class reconnect_timer;
+class reconnect_options;
 class sasl;
 class sender;
 class sender_iterator;

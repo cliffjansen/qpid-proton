@@ -115,13 +115,6 @@ class connection_options {
     /// It will be ignored if the connection is created by container::listen.
     PN_CPP_EXTERN connection_options& password(const std::string& pass);
 
-    /// @cond INTERNAL
-    // XXX settle questions about reconnect_timer - consider simply
-    // reconnect_options and making reconnect_timer internal
-    /// **Experimental**
-    PN_CPP_EXTERN connection_options& reconnect(const reconnect_timer &);
-    /// @endcond
-
     /// Set SSL client options.
     PN_CPP_EXTERN connection_options& ssl_client_options(const class ssl_client_options &);
 
@@ -144,6 +137,11 @@ class connection_options {
 
     /// **Experimental** - Set the SASL configuration path.
     PN_CPP_EXTERN connection_options& sasl_config_path(const std::string &);
+
+    /// **Experimental** - Options for reconnect on outgoing connections.
+    PN_CPP_EXTERN connection_options& reconnect(reconnect_options &);
+
+    
 
     /// Update option values from values set in other.
     PN_CPP_EXTERN connection_options& update(const connection_options& other);
