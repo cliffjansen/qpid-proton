@@ -527,6 +527,7 @@ typedef struct pconnection_t {
   bool disconnected;
   bool bound;
   int hog_count; // thread hogging limiter
+  size_t output_aggregate_limit;
   pn_event_batch_t batch;
   pn_connection_driver_t driver;
   struct pn_netaddr_t local, remote; /* Actual addresses */
@@ -572,7 +573,8 @@ struct pn_listener_t {
 };
 
 static pn_event_batch_t *pconnection_process(pconnection_t *pc, uint32_t events, bool timeout, bool topup);
-static void write_flush(pconnection_t *pc);
+static void write_flush(pconnection_t *pc, pn_bytes_t);
+static inline void maybe_write_flush(pconnection_t *pc);
 static void listener_begin_close(pn_listener_t* l);
 static void proactor_add(pcontext_t *ctx);
 static bool proactor_remove(pcontext_t *ctx);
@@ -795,6 +797,8 @@ static const char *pconnection_setup(pconnection_t *pc, pn_proactor_t *p, pn_con
   pc->write_blocked = true;
   pc->disconnected = false;
   pc->hog_count = 0;
+  char *lim = getenv("PNI_AGGR_LIM");
+  pc->output_aggregate_limit = lim ? (size_t) atoi(lim) : 0;
   pc->batch.next_event = pconnection_batch_next;
 
   if (server) {
@@ -884,7 +888,7 @@ static pn_event_t *pconnection_batch_next(pn_event_batch_t *batch) {
   if (!pc->bound) return NULL;
   pn_event_t *e = pn_connection_driver_next_event(&pc->driver);
   if (!e) {
-    write_flush(pc);  // May generate transport event
+    maybe_write_flush(pc);  // May generate transport event
     e = pn_connection_driver_next_event(&pc->driver);
     if (!e && pc->hog_count < HOG_MAX) {
       if (pconnection_process(pc, 0, false, true)) {
@@ -952,6 +956,7 @@ static inline bool pconnection_work_pending(pconnection_t *pc) {
 
 static void pconnection_done(pconnection_t *pc) {
   bool notify = false;
+  write_flush(pc, pn_bytes_null);
   lock(&pc->context.mutex);
   pc->context.working = false;  // So we can wake() ourself if necessary.  We remain the de facto
                                 // working context while the lock is held.
@@ -992,9 +997,11 @@ static bool pconnection_write(pconnection_t *pc, pn_bytes_t wbuf) {
   return true;
 }
 
-static void write_flush(pconnection_t *pc) {
+static void write_flush(pconnection_t *pc, pn_bytes_t wbuf) {
   if (!pc->write_blocked && !pconnection_wclosed(pc)) {
-    pn_bytes_t wbuf = pn_connection_driver_write_buffer(&pc->driver);
+    // if wbuf is not null, we have already made the transport layers create any pending output
+    if (!wbuf.size)
+      wbuf = pn_connection_driver_write_buffer(&pc->driver);
     if (wbuf.size > 0) {
       if (!pconnection_write(pc, wbuf)) {
         psocket_error(&pc->psocket, errno, pc->disconnected ? "disconnected" : "on write to");
@@ -1005,6 +1012,15 @@ static void write_flush(pconnection_t *pc) {
         shutdown(pc->psocket.sockfd, SHUT_WR);
         pc->write_blocked = true;
       }
+    }
+  }
+}
+
+static inline void maybe_write_flush(pconnection_t *pc) {
+  if (pc->output_aggregate_limit) {
+    pn_bytes_t wbuf = pn_connection_driver_write_buffer(&pc->driver);
+    if (wbuf.size > pc->output_aggregate_limit) {
+      write_flush(pc, wbuf);
     }
   }
 }
@@ -1163,7 +1179,7 @@ static pn_event_batch_t *pconnection_process(pconnection_t *pc, uint32_t events,
     return &pc->batch;
   }
 
-  write_flush(pc);
+  write_flush(pc, pn_bytes_null);
 
   lock(&pc->context.mutex);
   if (pc->context.closing && pconnection_is_final(pc)) {
