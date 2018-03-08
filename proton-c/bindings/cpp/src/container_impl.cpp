@@ -49,7 +49,117 @@
 #include <proton/reactor.h>
 #include <proton/session.h>
 
+#include <pthread.h>
+#include <unistd.h>
+
 namespace proton {
+
+/* === simple mutex as used in epoll.c. === */
+typedef pthread_mutex_t pmutex;
+static void pmutex_init(pthread_mutex_t *pm){
+  pthread_mutexattr_t attr;
+
+  pthread_mutexattr_init(&attr);
+  pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_ADAPTIVE_NP);
+  if (pthread_mutex_init(pm, &attr)) {
+      throw error("pthread mutex init failure");
+  }
+}
+
+static void pmutex_finalize(pthread_mutex_t *m) { pthread_mutex_destroy(m); }
+static inline void lock(pmutex *m) { pthread_mutex_lock(m); }
+static inline void unlock(pmutex *m) { pthread_mutex_unlock(m); }
+
+class guard {
+  public:
+    guard(pmutex &m) : mutex_(m), set_(true) { lock(&mutex_); }
+    ~guard() { if (set_) unlock(&mutex_); }
+    void release() {
+        if (set_) {
+            set_ = false;
+            unlock(&mutex_);
+        }
+    }
+  private:
+    pmutex &mutex_;
+    bool set_;
+};
+
+
+/* === similar work and jobs concept as in 0.18 C++ === */
+
+namespace {
+
+void_function0 * null_func0 = NULL;
+
+struct work {
+    duration delay;
+    bool is_03;
+    union ufunc_t {
+        void_function0 *func_03;  // can't use a reference in a union
+        ufunc_t(void_function0 *f) : func_03(f) {}
+#if PN_CPP_HAS_STD_FUNCTION
+        std::function<void()> std_func;
+        ufunc_t(std::function<void()> f) : std_func(f) {}
+#endif
+        ~ufunc_t() {}
+    } func;
+
+    work(duration d, void_function0& f): delay(d), is_03(true), func(&f) {}
+#if PN_CPP_HAS_STD_FUNCTION
+    work(duration d, std::function<void()> f): delay(d), is_03(false), func(f) {}
+#endif
+    work() : delay(0), is_03(true), func(null_func0) {}
+    ~work() {
+#if PN_CPP_HAS_STD_FUNCTION
+        if (!is_03)
+            func.std_func.~function<void()>();
+#endif
+    }
+    work(const work &o) : delay(o.delay), is_03(o.is_03), func(null_func0) {
+        if (is_03)
+            func.func_03 = o.func.func_03;
+#if PN_CPP_HAS_STD_FUNCTION
+        else
+            new(&func.std_func) ufunc_t(o.func.std_func);
+#endif
+    }
+
+    void operator()() {
+        if (is_03) {
+            (*func.func_03)();
+        }
+#if PN_CPP_HAS_STD_FUNCTION
+        else
+            func.std_func();
+#endif
+    }
+};
+
+}
+
+class mt_scheduler {
+public:
+    mt_scheduler(container &c, reactor &r);
+    ~mt_scheduler();
+    void schedule(duration, void_function0&);
+    void set_running_thread() { guard lck(tid_mutex_); running_tid_ = pthread_self(); tid_initialized_ = true; }
+    bool is_running_thread() { guard lck(tid_mutex_); return tid_initialized_ && pthread_equal(pthread_self(), running_tid_); }
+#if PN_CPP_HAS_STD_FUNCTION
+    void schedule(duration, std::function<void()>);
+#endif
+    void tick();
+private:
+    pthread_t running_tid_;
+    pmutex tid_mutex_;
+    bool tid_initialized_;
+    container &container_;
+    reactor &reactor_;
+    pmutex mutex_;
+    std::vector<work> jobs_;
+    std::vector<work> delayed_jobs_;
+};
+
 
 class container::impl::handler_context {
   public:
@@ -105,6 +215,9 @@ class container::impl::override_handler : public proton_handler
                 container_impl_.configure_server_connection(c);
             }
         }
+        else if (type == proton_event::REACTOR_QUIESCED)
+            // Always check for queued work before sleeping in reactor select()
+            container_impl_.mt_tick();
         pn_handler_dispatch(base_handler.get(), cevent, pn_event_type_t(type));
     }
 };
@@ -143,6 +256,7 @@ container::impl::impl(container& c, const std::string& id, messaging_handler *mh
     // Note: we have just set up the following handlers that see
     // events in this order: messaging_adapter, connector override,
     // the reactor's default globalhandler (pn_iohandler)
+    mt_init();
 }
 
 namespace {
@@ -159,6 +273,7 @@ void close_acceptor(acceptor a) {
 container::impl::~impl() {
     for (acceptors::iterator i = acceptors_.begin(); i != acceptors_.end(); ++i)
         close_acceptor(i->second);
+    mt_cleanup();
 }
 
 // FIXME aconway 2016-06-07: this is not thread safe. It is sufficient for using
@@ -294,7 +409,10 @@ struct timer_handler_03 : public timer_handler {
 }
 
 void container::impl::schedule(duration delay, void_function0& f) {
-    schedule(*this, delay.milliseconds(), new timer_handler_03(f));
+    if (mt_scheduler_->is_running_thread())
+        schedule(*this, delay.milliseconds(), new timer_handler_03(f));
+    else
+        mt_scheduler_->schedule(delay, f);
 }
 
 #if PN_CPP_HAS_STD_FUNCTION
@@ -307,7 +425,10 @@ struct timer_handler_std : public timer_handler {
 }
 
 void container::impl::schedule(duration delay, std::function<void()> f) {
-    schedule(*this, delay.milliseconds(), new timer_handler_std(f));
+    if (mt_scheduler_->is_running_thread())
+        schedule(*this, delay.milliseconds(), new timer_handler_std(f));
+    else
+        mt_scheduler_->schedule(delay, f);
 }
 #endif
 
@@ -348,6 +469,7 @@ void container::impl::configure_server_connection(connection &c) {
 }
 
 void container::impl::run() {
+    mt_scheduler_->set_running_thread();
     do {
         reactor_.run();
     } while (!auto_stop_);
@@ -361,5 +483,87 @@ void container::impl::stop(const error_condition&) {
 void container::impl::auto_stop(bool set) {
     auto_stop_ = set;
 }
+
+/*
+ * MT safe schedule. Uses reactor's self-pipe for poking the reactor
+ * thread into action.
+ *
+ * Order is lock/push/unlock, OS write (via reactor.wakup), OS read
+ * (of wakeup pipe in reactor thread), lock/consume/unlock.
+ */
+
+    mt_scheduler::mt_scheduler(container &c, reactor &r) : tid_initialized_(false), container_(c), reactor_(r) {
+    pmutex_init(&mutex_);
+    pmutex_init(&tid_mutex_);
+}
+
+mt_scheduler::~mt_scheduler() {
+    pmutex_finalize(&mutex_);
+    pmutex_finalize(&tid_mutex_);
+}
+
+void container::impl::mt_init() { mt_scheduler_ = new mt_scheduler(container_, reactor_); }
+
+void container::impl::mt_cleanup() { delete mt_scheduler_; }
+
+void container::impl::mt_tick() { mt_scheduler_->tick(); }
+
+void mt_scheduler::schedule(duration delay, void_function0& f) {
+    {
+        guard lck(mutex_);
+        work w(delay, f);
+        if (delay.milliseconds())
+            delayed_jobs_.push_back(w);
+        else
+            jobs_.push_back(w);
+    }
+    reactor_.wakeup();
+    // Force a poller readable.  tick() will be processed just before a subsequent call to poll().
+    // wakeup() is thread-safe in Posix, but not on Windows.
+}
+
+#if PN_CPP_HAS_STD_FUNCTION
+void mt_scheduler::schedule(duration delay, std::function<void()> f) {
+    {
+        guard lck(mutex_);
+        work w(delay, f);
+        if (delay.milliseconds())
+            delayed_jobs_.push_back(w);
+        else
+            jobs_.push_back(w);
+    }
+    reactor_.wakeup();
+}
+
+#endif
+
+void mt_scheduler::tick() {
+    guard lck(mutex_);
+    if (jobs_.empty() && delayed_jobs_.empty()) {
+        return;
+    }
+    else {
+        std::vector<work> immediate_jobs;
+        for (std::vector<work>::iterator w = delayed_jobs_.begin(); w != delayed_jobs_.end(); ++w) {
+            // do a normal non-mt schedule on the reactor's timer
+            if (w->is_03)
+                container_.schedule(w->delay, *(w->func.func_03));
+#if PN_CPP_HAS_STD_FUNCTION
+            else
+                container_.schedule(w->delay, w->func.std_func);
+#endif
+        }
+        delayed_jobs_.clear();
+        std::swap(immediate_jobs, jobs_);
+        lck.release();
+
+        for (std::vector<work>::iterator w = immediate_jobs.begin(); w != immediate_jobs.end(); ++w)
+            try {
+                (*w)();
+            } catch (...) {};
+    }
+    return;
+}
+
 
 }

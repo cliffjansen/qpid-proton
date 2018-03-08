@@ -48,6 +48,7 @@ class connector;
 class acceptor;
 class url;
 class listen_handler;
+class mt_scheduler;
 
 class container::impl {
   public:
@@ -84,6 +85,9 @@ class container::impl {
     static void schedule(impl& ci, int delay, proton_handler *h);
     static void schedule(container& c, int delay, proton_handler *h);
     template <class T> static void set_handler(T s, messaging_handler* h);
+    void mt_init();
+    void mt_cleanup();
+    void mt_tick();
 
   private:
     class handler_context;
@@ -103,6 +107,7 @@ class container::impl {
     typedef std::map<std::string, acceptor> acceptors;
     acceptors acceptors_;
     bool auto_stop_;
+    mt_scheduler *mt_scheduler_;
 };
 
 template <class T>
