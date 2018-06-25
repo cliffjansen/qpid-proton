@@ -119,7 +119,8 @@ typedef enum {
   PCONNECTION_IO,
   PCONNECTION_TIMER,
   LISTENER_IO,
-  PROACTOR_TIMER } epoll_type_t;
+  PROACTOR_TIMER,
+  WAKE2 } epoll_type_t;
 
 // Data to use with epoll.
 typedef struct epoll_extended_t {
@@ -374,6 +375,32 @@ static void pcontext_finalize(pcontext_t* ctx) {
   pmutex_finalize(&ctx->mutex);
 }
 
+/*
+ * wakeable prototype hack: no lifecycle management, just a single
+ * instance tied to life of proactor.  Steals existing
+ * PN_REACTOR_FINAL instead of providing new event.
+ */
+
+typedef struct wakeable_t {
+  pcontext_t context;
+  int hog_count;
+  epoll_extended_t epoll_wake2;
+  pn_event_batch_t batch;
+  int eventfd;
+  pn_collector_t *collector;
+} wakeable_t;
+
+static void single_wake2(pn_proactor_t *);
+static void single_wake2_free(pn_proactor_t *);
+static pn_event_batch_t *wake2_process(wakeable_t *w);
+static pn_event_t *wake2_batch_next(pn_event_batch_t *batch);
+static inline wakeable_t *batch_wakeable(pn_event_batch_t *batch) {
+  return (batch->next_event == wake2_batch_next) ?
+    (wakeable_t*)((char*)batch - offsetof(wakeable_t, batch)) : NULL;
+}
+static void wake2_done(wakeable_t *w);
+
+
 /* common to connection and listener */
 typedef struct psocket_t {
   pn_proactor_t *proactor;
@@ -417,6 +444,7 @@ struct pn_proactor_t {
   pmutex deferred_free_mutex;
   void *deferred_free_list[MAX_DEFERRED_FREES];
   int def_idx;
+  wakeable_t *w2;
 };
 
 static void rearm(pn_proactor_t *p, epoll_extended_t *ee);
@@ -1832,6 +1860,7 @@ pn_proactor_t *pn_proactor() {
             p->timer_armed = true;
             epoll_wake_init(&p->epoll_wake, p->eventfd, p->epollfd);
             epoll_wake_init(&p->epoll_interrupt, p->interruptfd, p->epollfd);
+            single_wake2(p);
             return p;
           }
       }
@@ -1857,6 +1886,7 @@ void pn_proactor_free(pn_proactor_t *p) {
   close(p->interruptfd);
   p->interruptfd = -1;
   ptimer_finalize(&p->timer);
+  single_wake2_free(p);
   while (p->contexts) {
     pcontext_t *ctx = p->contexts;
     p->contexts = ctx->next;
@@ -2059,6 +2089,8 @@ static pn_event_batch_t *proactor_do_epoll(struct pn_proactor_t* p, bool can_blo
       batch = process_inbound_wake(p, ee);
     } else if (ee->type == PROACTOR_TIMER) {
       batch = proactor_process(p, PN_PROACTOR_TIMEOUT);
+    } else if (ee->type == WAKE2) {
+      batch = wake2_process((wakeable_t *) ee->psocket);
     } else {
       pconnection_t *pc = psocket_pconnection(ee->psocket);
       if (pc) {
@@ -2097,6 +2129,11 @@ void pn_proactor_done(pn_proactor_t *p, pn_event_batch_t *batch) {
   pn_listener_t *l = batch_listener(batch);
   if (l) {
     listener_done(l);
+    return;
+  }
+  wakeable_t *w = batch_wakeable(batch);
+  if (w) {
+    wake2_done(w);
     return;
   }
   pn_proactor_t *bp = batch_proactor(batch);
@@ -2270,4 +2307,101 @@ pn_millis_t pn_proactor_now(void) {
   struct timespec t;
   clock_gettime(CLOCK_MONOTONIC, &t);
   return t.tv_sec*1000 + t.tv_nsec/1000000;
+}
+
+// ------------------------------------------------------------------------
+
+static wakeable_t *new_wake2(pn_proactor_t *p) {
+  wakeable_t *w = (wakeable_t*)calloc(1, sizeof(*w));
+  if (!w) return NULL;
+  w->eventfd = -1;
+  if ((w->eventfd = eventfd(0, EFD_NONBLOCK)) >= 0) {
+    if ((w->collector = pn_collector()) != NULL) {
+      pcontext_init(&w->context, WAKEABLE, p, w);
+      w->batch.next_event = &wake2_batch_next;
+      epoll_extended_t *ee = &w->epoll_wake2;
+      ee->psocket = (psocket_t *) w; // fix cast
+      ee->fd = w->eventfd;
+      ee->type = WAKE2;
+      ee->wanted = 0; // Do not arm until first wake
+      ee->polling = false;
+      start_polling(ee, p->epollfd);  // TODO: check for error
+      // prepare for future arming...
+      uint64_t increment = 1;
+      if (write(w->eventfd, &increment, sizeof(uint64_t)) != sizeof(uint64_t))
+        EPOLL_FATAL("setting eventfd", errno);
+      ee->wanted = EPOLLIN;
+      lock(&w->context.mutex); unlock(&w->context.mutex);
+      return w;
+    }
+  }
+  if (w->eventfd >= 0) close(w->eventfd);
+  if (w->collector) pn_free(w->collector);
+  free(w);
+  return NULL;
+}
+
+static void single_wake2(pn_proactor_t *p) {
+  p->w2 = new_wake2(p);
+}
+
+static void wake2_final_free(wakeable_t* w) {
+  if (w->eventfd >= 0) close(w->eventfd);
+  pcontext_finalize(&w->context); // note... missing equiv cleanup in pn_proactor() error exit
+  if (w->collector) pn_free(w->collector);
+  free(w);
+}
+
+static void single_wake2_free(pn_proactor_t *p) {
+  wake2_final_free(p->w2);
+}
+
+static void wake2_done(wakeable_t *w) {
+  bool rearming = false;
+  lock(&w->context.mutex);
+  w->context.working = false;
+  w->hog_count = 0;
+  if (w->context.wake_ops)
+    rearming = true;
+  unlock(&w->context.mutex);
+
+  if (rearming) rearm(w->context.proactor, &w->epoll_wake2);
+}
+
+static pn_event_batch_t *wake2_process(wakeable_t *w) {
+  // No contention, serialized on owned eventfd:  wake_via_rearm, working, done, rearm_if_wake_pending, repeat
+  return &w->batch;  // set working later in batch_next
+}
+
+
+static pn_event_t *wake2_batch_next(pn_event_batch_t *batch) {
+  wakeable_t *w = batch_wakeable(batch);
+  lock(&w->context.mutex);
+  w->context.working = true;
+  w->hog_count++;
+  if (w->context.wake_ops && w->hog_count < 10) { // good hog_count value??
+    w->context.wake_ops = 0;
+    // TODO: replace proactor with wakeable class/object pair, PN_REACTOR_FINAL with new event.
+    pn_collector_put(w->collector, pn_proactor__class(), w->context.proactor, PN_REACTOR_FINAL);  
+    pn_event_t *e = pn_collector_next(w->collector);
+    unlock(&w->context.mutex);
+    return e;
+  }
+  unlock(&w->context.mutex);
+  return NULL;
+}
+
+
+void pn_proactor_wake2(pn_proactor_t *p) {
+  wakeable_t *w = p->w2;
+  bool rearming = false;
+  lock(&w->context.mutex);
+  if (!w->context.wake_ops) {
+    w->context.wake_ops++;
+    if (!w->context.working)
+      rearming = true;
+  }
+  unlock(&w->context.mutex);
+  if (rearming)
+    rearm(w->context.proactor, &w->epoll_wake2);
 }
