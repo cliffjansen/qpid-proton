@@ -113,6 +113,7 @@ static inline void lock(pmutex *m) { pthread_mutex_lock(m); }
 static inline void unlock(pmutex *m) { pthread_mutex_unlock(m); }
 
 typedef struct acceptor_t acceptor_t;
+typedef struct perf_debug_t perf_debug_t;
 
 typedef enum {
   WAKE,   /* see if any work to do in proactor/psocket context */
@@ -560,6 +561,7 @@ typedef struct pconnection_t {
   pmutex rearm_mutex;                /* protects pconnection_rearm from out of order arming*/
   epoll_extended_t epoll_io_2;
   epoll_extended_t *rearm_target;    /* main or secondary epollfd */
+  perf_debug_t *perf_debug  __attribute__((aligned(64)));
 } pconnection_t;
 
 /* Protects read/update of pn_connnection_t pointer to it's pconnection_t
@@ -571,6 +573,168 @@ typedef struct pconnection_t {
  * TODO: replace mutex with atomic load/store
  */
 static pthread_mutex_t driver_ptr_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+
+// ==========  perf debug stuff ==========
+
+#include <sys/stat.h>
+#include <inttypes.h>
+
+uint64_t hrtick(void) {
+  uint32_t lo, hi;
+  __asm__ volatile ("rdtscp"
+      : /* outputs */ "=a" (lo), "=d" (hi)
+      : /* no inputs */
+      : /* clobbers */ "%rcx");
+  return (uint64_t)lo | (((uint64_t)hi) << 32);
+}
+
+static int pd_conn_count = 0;
+
+struct perf_debug_t {
+  FILE *fp;
+  pn_link_t *link;  // only track the first
+  int nlinks;
+  bool is_sender, batching;
+  // zc = zero credit, wb = write blocked, mb = messages processed in a single batch
+  uint64_t start, end, zc_start, zc_ticks;
+  uint64_t wb_start, wb_ticks;
+  uint64_t wbuf_ticks;
+  int wb_count, zc_count, mb_count;
+  int batches, mbatches, messages;
+  int nr, maxr, maxrr, nw, maxw, maxwr;
+  int w_type;
+  int n_ew, n_ewt, n_ew_ign;
+  int nwf;
+};
+
+static void perf_debug_lopen(pconnection_t *pc, pn_link_t *l) {
+  perf_debug_t *pd = pc->perf_debug;
+  if (pd->nlinks++) return;
+  pd->link = l;
+  pd->is_sender = pn_link_is_sender(l);
+}
+
+static void perf_debug_lclose(pconnection_t  *pc, pn_link_t *l) {
+  perf_debug_t *pd = pc->perf_debug;
+  if (l != pd->link) return;
+  if (pd->start && !pd->end) pd->end = hrtick();
+  if (pd->zc_start) pd->zc_start = 0; // zero credit at end of run is not starvation
+  pd->link = NULL;
+}
+
+static void perf_debug_flow(pconnection_t *pc, pn_link_t *l) {
+  perf_debug_t *pd = pc->perf_debug;
+  if (l != pd->link) return;
+  if (pd->is_sender) {
+    if (pn_link_credit(l) > 0) {
+      uint64_t now = hrtick();
+      if (pd->start) {
+        if (pd->zc_start) {
+          pd->zc_ticks += now - pd->zc_start;
+          pd->zc_start = 0;
+        }
+      } else {
+        pd->start = now;
+      }
+    }
+  }
+}
+
+static void perf_debug_delivery(pconnection_t *pc, pn_delivery_t *d) {
+  perf_debug_t *pd = (perf_debug_t *) pc->perf_debug;
+  pn_link_t *l = pn_delivery_link(d);
+  if (l != pd->link) return;
+  if (!pd->start) pd->start = hrtick();
+  pd->mb_count++;
+}
+
+static void perf_debug_pcdone(pconnection_t *pc) {
+  perf_debug_t *pd = (perf_debug_t *) pc->perf_debug;
+  pd->batching = false;
+  if (pd->is_sender && pd->start && pd->link && !pd->zc_start && pn_link_credit(pd->link) <= 0) {
+    pd->zc_start = hrtick();
+    pd->zc_count++;
+  }
+  if (pd->link) {
+    if (pd->mb_count) {
+      pd->mbatches++;
+      pd->messages += pd->mb_count;
+      pd->mb_count = 0;
+    }
+  }
+}
+
+
+static void perf_debug_tpclose(pconnection_t *pc, pn_transport_t *t) {
+  perf_debug_t *pd = pc->perf_debug;
+  if (pd->start && !pd->end) pd->end = hrtick();
+  if (pd->zc_start) pd->zc_start = 0; // zero credit at end of run is not starvation
+  pd->link = NULL;
+}
+
+
+
+static void perf_debug_setup(pconnection_t *pc) {
+  const char *dbdir = getenv("PN_EPOLL_PD_DIR");
+  if (!dbdir) return;
+  struct stat sb;
+  if (stat(dbdir, &sb) || !S_ISDIR(sb.st_mode)) return;
+  
+  lock(&driver_ptr_mutex);
+  int conn_count = pd_conn_count++;
+  unlock(&driver_ptr_mutex);
+  char fname[256];
+  if (snprintf(fname, sizeof(fname), "%s/conn_%d_%d", dbdir, getpid(), conn_count) < 0) return;
+  FILE *fp = fopen(fname, "w");
+  if (!fp) return;
+
+  perf_debug_t *pd = (perf_debug_t *) calloc(1, sizeof(perf_debug_t));
+  if (!pd) {
+    fclose(fp);
+    return;
+  }
+  pd->fp = fp;
+  pc->perf_debug = pd;
+
+  const char *perfw = getenv("PN_EPOLL_PD_W");
+  if (perfw)
+    if (*perfw >= '0' && *perfw <= '9')
+      pd->w_type = atoi(perfw);
+}
+
+static void perf_debug_final(pconnection_t *pc) {
+  perf_debug_t *pd = pc->perf_debug;  
+
+  uint64_t now = hrtick();
+  if (pd->start && !pd->end)
+    pd->end = now;
+  // uint64_t life_ticks = now - creation_time
+  uint64_t run_ticks = pd->end - pd->start;
+  if (run_ticks) {
+    if (pd->is_sender) {
+      fprintf(pd->fp, "sender stats... run %" PRIu64 " wb %d  %" PRIu64  " (%.2f)  no cr %d  %" PRIu64 " (%.2f)\n", 
+              run_ticks, pd->wb_count, pd->wb_ticks, (double)pd->wb_ticks*100/run_ticks, pd->zc_count, pd->zc_ticks, (double)pd->zc_ticks*100/run_ticks);
+    } else {
+      fprintf(pd->fp, "rcv stats... run %" PRIu64 " wb %d  %" PRIu64 " (%.2f)\n",
+              run_ticks, pd->wb_count, pd->wb_ticks, (double)pd->wb_ticks*100/run_ticks);
+
+    }
+//    fprintf(pd->fp,   "               msg %d   r %d %d %d   w %d %d %d wbuft %" PRIu64 " btot %d  m/b %.2f\n", pd->messages, pd->nr, pd->maxr, pd->maxrr, pd->nw, pd->maxw, pd->maxwr, pd->wbuf_ticks, pd->batches, (double)pd->messages/pd->mbatches);
+//    fprintf(pd->fp,   "               ew try %d  yes %d   ignore %d tp %d    writes %d  wf %d\n", pd->n_ewt, pd->n_ew, pd->n_ew_ign, pd->w_type, pd->nw, pd->nwf);
+  } else {
+    fprintf(pd->fp, "no stats\n");
+  }    
+  fclose(pd->fp);
+  free(pc->perf_debug);
+  pc->perf_debug = NULL;
+}
+
+// ==========  perf debug end ==========
+
+
+
+
 
 static pconnection_t *get_pconnection(pn_connection_t* c) {
   if (!c) return NULL;
@@ -858,6 +1022,7 @@ static const char *pconnection_setup(pconnection_t *pc, pn_proactor_t *p, pn_con
   ee->type = PCONNECTION_IO_2;
   ee->wanted = 0;
   ee->polling = false;
+  perf_debug_setup(pc);
 
   /* Set the pconnection_t backpointer last.
      Connections that were released by pn_proactor_release_connection() must not reveal themselves
@@ -888,6 +1053,7 @@ static void pconnection_final_free(pconnection_t *pc) {
   pn_condition_free(pc->disconnect_condition);
   pn_connection_driver_destroy(&pc->driver);
   pcontext_finalize(&pc->context);
+  if (pc->perf_debug) perf_debug_final(pc);
   free(pc);
 }
 
@@ -954,6 +1120,17 @@ static pn_event_t *pconnection_batch_next(pn_event_batch_t *batch) {
       }
     }
   }
+  if (e && pc->perf_debug) {
+    switch (pn_event_type(e)) {
+    case PN_LINK_REMOTE_OPEN: perf_debug_lopen(pc, pn_event_link(e)); break;
+    case PN_LINK_FLOW: perf_debug_flow(pc, pn_event_link(e)); break;
+    case PN_LINK_REMOTE_CLOSE: perf_debug_lclose(pc, pn_event_link(e)); break;
+    case PN_DELIVERY: perf_debug_delivery(pc, pn_event_delivery(e)); break;
+    case PN_TRANSPORT_CLOSED: perf_debug_tpclose(pc, pn_event_transport(e)); break;
+    default: break;
+    }
+  }
+
   return e;
 }
 
@@ -1035,6 +1212,7 @@ static void pconnection_done(pconnection_t *pc) {
   pc->context.working = false;  // So we can wake() ourself if necessary.  We remain the de facto
                                 // working context while the lock is held.
   pc->hog_count = 0;
+  if (pc->perf_debug) perf_debug_pcdone(pc);
   if (pconnection_has_event(pc) || pconnection_work_pending(pc)) {
     notify = wake(&pc->context);
   } else if (pn_connection_driver_finished(&pc->driver)) {
