@@ -606,7 +606,31 @@ struct perf_debug_t {
   int w_type;
   int n_ew, n_ewt, n_ew_ign;
   int nwf;
+  bool dbwake_in_progress;
+  uint64_t working_start, working_ticks;
 };
+
+#include "core/engine-internal.h"
+
+static void perf_reset_bits(pconnection_t *pc) {
+  pc->driver.connection->proactor_bits = 0;
+  perf_debug_t *pd = (perf_debug_t *) pc->perf_debug;
+  pd->nwf++;
+}
+
+static bool perf_can_write_early(pconnection_t *pc, int rq_type) {
+  perf_debug_t *pd = (perf_debug_t *) pc->perf_debug;
+  pd->n_ewt++;
+  if (pd->w_type == 0) {
+    pd->n_ew_ign++;
+    return false;
+  }
+  if ((pd->w_type | rq_type) && pc->driver.connection->proactor_bits != 0) {
+    pd->n_ew++;
+    return true;
+  }
+  return false;
+}
 
 static void perf_debug_lopen(pconnection_t *pc, pn_link_t *l) {
   perf_debug_t *pd = pc->perf_debug;
@@ -649,11 +673,23 @@ static void perf_debug_delivery(pconnection_t *pc, pn_delivery_t *d) {
   pd->mb_count++;
 }
 
+static uint64_t perf_debug_stop_working(pconnection_t *pc) {
+  perf_debug_t *pd = (perf_debug_t *) pc->perf_debug;
+  uint64_t now = hrtick();
+  if (pd->working_start) {
+    pd->working_ticks += (now - pd->working_start);
+    pd->working_start = 0;
+  }
+  return now;
+}
+
+
 static void perf_debug_pcdone(pconnection_t *pc) {
   perf_debug_t *pd = (perf_debug_t *) pc->perf_debug;
+  uint64_t now = perf_debug_stop_working(pc);
   pd->batching = false;
   if (pd->is_sender && pd->start && pd->link && !pd->zc_start && pn_link_credit(pd->link) <= 0) {
-    pd->zc_start = hrtick();
+    pd->zc_start = now;
     pd->zc_count++;
   }
   if (pd->link) {
@@ -720,8 +756,9 @@ static void perf_debug_final(pconnection_t *pc) {
               run_ticks, pd->wb_count, pd->wb_ticks, (double)pd->wb_ticks*100/run_ticks);
 
     }
+    fprintf(pd->fp,   "               work_tics %" PRIu64  " (%.2f) \n", pd->working_ticks, (double)pd->working_ticks*100/run_ticks);
 //    fprintf(pd->fp,   "               msg %d   r %d %d %d   w %d %d %d wbuft %" PRIu64 " btot %d  m/b %.2f\n", pd->messages, pd->nr, pd->maxr, pd->maxrr, pd->nw, pd->maxw, pd->maxwr, pd->wbuf_ticks, pd->batches, (double)pd->messages/pd->mbatches);
-//    fprintf(pd->fp,   "               ew try %d  yes %d   ignore %d tp %d    writes %d  wf %d\n", pd->n_ewt, pd->n_ew, pd->n_ew_ign, pd->w_type, pd->nw, pd->nwf);
+    fprintf(pd->fp,   "               ew try %d  yes %d   ignore %d tp %d    writes %d  wf %d\n", pd->n_ewt, pd->n_ew, pd->n_ew_ign, pd->w_type, pd->nw, pd->nwf);
   } else {
     fprintf(pd->fp, "no stats\n");
   }    
@@ -1109,6 +1146,13 @@ static void pconnection_forced_shutdown(pconnection_t *pc) {
 
 static pn_event_t *pconnection_batch_next(pn_event_batch_t *batch) {
   pconnection_t *pc = batch_pconnection(batch);
+  if (pc->perf_debug) {
+    if (pc->perf_debug->dbwake_in_progress) {
+      if (perf_can_write_early(pc, 2)) write_flush(pc);
+    }
+    pc->perf_debug->dbwake_in_progress = false;
+  }
+    
   if (!pc->driver.connection) return NULL;
   pn_event_t *e = pn_connection_driver_next_event(&pc->driver);
   if (!e) {
@@ -1127,6 +1171,7 @@ static pn_event_t *pconnection_batch_next(pn_event_batch_t *batch) {
     case PN_LINK_REMOTE_CLOSE: perf_debug_lclose(pc, pn_event_link(e)); break;
     case PN_DELIVERY: perf_debug_delivery(pc, pn_event_delivery(e)); break;
     case PN_TRANSPORT_CLOSED: perf_debug_tpclose(pc, pn_event_transport(e)); break;
+    case PN_CONNECTION_WAKE: pc->perf_debug->dbwake_in_progress = true; break;
     default: break;
     }
   }
@@ -1247,6 +1292,7 @@ static bool pconnection_write(pconnection_t *pc, pn_bytes_t wbuf) {
 static void write_flush(pconnection_t *pc) {
   if (!pc->write_blocked && !pconnection_wclosed(pc)) {
     pn_bytes_t wbuf = pn_connection_driver_write_buffer(&pc->driver);
+    if (pc->perf_debug) perf_reset_bits(pc);
     if (wbuf.size > 0) {
       if (!pconnection_write(pc, wbuf)) {
         psocket_error(&pc->psocket, errno, pc->disconnected ? "disconnected" : "on write to");
@@ -1319,6 +1365,7 @@ static pn_event_batch_t *pconnection_process(pconnection_t *pc, uint32_t events,
       return NULL;
     }
     pc->context.working = true;
+    if(pc->perf_debug) { pc->perf_debug->working_start = hrtick(); }
   }
 
   // Confirmed as working thread.  Review state and unlock ASAP.
@@ -1421,6 +1468,7 @@ static pn_event_batch_t *pconnection_process(pconnection_t *pc, uint32_t events,
 
   if (topup) {
     // If there was anything new to topup, we have it by now.
+    if (pc->perf_debug && (perf_can_write_early(pc, 1))) write_flush(pc);
     return NULL;  // caller already owns the batch
   }
 
@@ -1442,7 +1490,9 @@ static pn_event_batch_t *pconnection_process(pconnection_t *pc, uint32_t events,
     goto retry;  // TODO: get rid of goto without adding more locking
 
   pc->context.working = false;
+  if (pc->perf_debug) perf_debug_stop_working(pc);
   pc->hog_count = 0;
+  
   if (pn_connection_driver_finished(&pc->driver)) {
     pconnection_begin_close(pc);
     if (pconnection_is_final(pc)) {

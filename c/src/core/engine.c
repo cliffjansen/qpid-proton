@@ -538,6 +538,7 @@ pn_connection_t *pn_connection()
   conn->context = pn_record();
   conn->delivery_pool = pn_list(PN_OBJECT, 0);
   conn->driver = NULL;
+  conn->proactor_bits = 0;
 
   return conn;
 }
@@ -731,6 +732,7 @@ static void pni_add_tpwork(pn_delivery_t *delivery)
   {
     LL_ADD(connection, tpwork, delivery);
     delivery->tpwork = true;
+    if (delivery->link->endpoint.type == RECEIVER) connection->proactor_bits |= PROACTOR_RCV_DISP_BIT;
   }
   pn_modified(connection, &connection->endpoint, true);
 }
@@ -1940,6 +1942,7 @@ void pn_link_flow(pn_link_t *receiver, int credit)
   assert(receiver);
   assert(pn_link_is_receiver(receiver));
   receiver->credit += credit;
+  receiver->session->connection->proactor_bits |= PROACTOR_RCV_CREDIT_BIT;
   pn_modified(receiver->session->connection, &receiver->endpoint, true);
   if (!receiver->drain_flag_mode) {
     pn_link_set_drain(receiver, false);
@@ -2350,3 +2353,5 @@ const char *pn_disposition_type_name(uint64_t d) {
    default: return "unknown";
   }
 }
+
+char perf_version[] = {'Z','Z','Z','0','0','0'};

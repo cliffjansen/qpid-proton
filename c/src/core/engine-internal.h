@@ -225,6 +225,9 @@ struct pn_transport_t {
   bool referenced;
 };
 
+#define PROACTOR_RCV_CREDIT_BIT 0x1
+#define PROACTOR_RCV_DISP_BIT 0x2
+
 struct pn_connection_t {
   pn_endpoint_t endpoint;
   pn_endpoint_t *endpoint_head;
@@ -249,6 +252,7 @@ struct pn_connection_t {
   pn_record_t *context;
   pn_list_t *delivery_pool;
   struct pn_connection_driver_t *driver;
+  int proactor_bits __attribute__((aligned(64)));
 };
 
 struct pn_session_t {
