@@ -632,6 +632,24 @@ static bool perf_can_write_early(pconnection_t *pc, int rq_type) {
   return false;
 }
 
+// transport produce 
+
+static pn_bytes_t perf_debug_wbuf(pconnection_t *pc) {
+  perf_debug_t *pd = (perf_debug_t *) pc->perf_debug;
+//  if (pd->is_sender && pd->link)
+//    pd->mb_count += pn_link_queued(pd->link);
+  uint64_t strt = hrtick();
+  pn_bytes_t bytes = pn_connection_driver_write_buffer(&pc->driver);
+  pd->wbuf_ticks += hrtick() - strt;
+  return bytes;
+}
+
+static inline pn_bytes_t get_wbuf(pconnection_t *pc) {
+  return pc->perf_debug ? perf_debug_wbuf(pc) : pn_connection_driver_write_buffer(&pc->driver);
+}
+
+
+
 static void perf_debug_lopen(pconnection_t *pc, pn_link_t *l) {
   perf_debug_t *pd = pc->perf_debug;
   if (pd->nlinks++) return;
@@ -756,7 +774,9 @@ static void perf_debug_final(pconnection_t *pc) {
               run_ticks, pd->wb_count, pd->wb_ticks, (double)pd->wb_ticks*100/run_ticks);
 
     }
-    fprintf(pd->fp,   "               work_tics %" PRIu64  " (%.2f) \n", pd->working_ticks, (double)pd->working_ticks*100/run_ticks);
+    fprintf(pd->fp,   "               work_tics %" PRIu64  " (%.2f)     wbuf_tics %" PRIu64  " (%.2f) \n",
+            pd->working_ticks, (double)pd->working_ticks*100/run_ticks, 
+            pd->wbuf_ticks, (double)pd->wbuf_ticks*100/run_ticks);
 //    fprintf(pd->fp,   "               msg %d   r %d %d %d   w %d %d %d wbuft %" PRIu64 " btot %d  m/b %.2f\n", pd->messages, pd->nr, pd->maxr, pd->maxrr, pd->nw, pd->maxw, pd->maxwr, pd->wbuf_ticks, pd->batches, (double)pd->messages/pd->mbatches);
     fprintf(pd->fp,   "               ew try %d  yes %d   ignore %d tp %d    writes %d  wf %d\n", pd->n_ewt, pd->n_ew, pd->n_ew_ign, pd->w_type, pd->nw, pd->nwf);
   } else {
@@ -1207,7 +1227,8 @@ static bool pconnection_rearm_check(pconnection_t *pc) {
     if (pc->write_blocked)
       wanted_now |= EPOLLOUT;
     else {
-      pn_bytes_t wbuf = pn_connection_driver_write_buffer(&pc->driver);
+//      pn_bytes_t wbuf = pn_connection_driver_write_buffer(&pc->driver);
+      pn_bytes_t wbuf = get_wbuf(pc);
       if (wbuf.size > 0)
         wanted_now |= EPOLLOUT;
     }
@@ -1247,7 +1268,8 @@ static inline bool pconnection_work_pending(pconnection_t *pc) {
     return true;
   if (!pc->read_blocked && !pconnection_rclosed(pc))
     return true;
-  pn_bytes_t wbuf = pn_connection_driver_write_buffer(&pc->driver);
+//  pn_bytes_t wbuf = pn_connection_driver_write_buffer(&pc->driver);
+  pn_bytes_t wbuf = get_wbuf(pc);
   return (wbuf.size > 0 && !pc->write_blocked);
 }
 
@@ -1291,7 +1313,8 @@ static bool pconnection_write(pconnection_t *pc, pn_bytes_t wbuf) {
 
 static void write_flush(pconnection_t *pc) {
   if (!pc->write_blocked && !pconnection_wclosed(pc)) {
-    pn_bytes_t wbuf = pn_connection_driver_write_buffer(&pc->driver);
+//    pn_bytes_t wbuf = pn_connection_driver_write_buffer(&pc->driver);
+    pn_bytes_t wbuf = get_wbuf(pc);
     if (pc->perf_debug) perf_reset_bits(pc);
     if (wbuf.size > 0) {
       if (!pconnection_write(pc, wbuf)) {
