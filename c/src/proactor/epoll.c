@@ -608,6 +608,9 @@ struct perf_debug_t {
   int nwf;
   bool dbwake_in_progress;
   uint64_t working_start, working_ticks;
+  pn_bytes_t pd_wbuf;
+  bool pd_wbuf_set, pd_min_wbuffing;
+  int pd_wbuf_sets, pd_wbuf_skips;
 };
 
 #include "core/engine-internal.h"
@@ -638,9 +641,18 @@ static pn_bytes_t perf_debug_wbuf(pconnection_t *pc) {
   perf_debug_t *pd = (perf_debug_t *) pc->perf_debug;
 //  if (pd->is_sender && pd->link)
 //    pd->mb_count += pn_link_queued(pd->link);
+  if (pd->pd_min_wbuffing) {
+    if (pd->pd_wbuf_set) {
+      pd->pd_wbuf_skips++;
+      return pd->pd_wbuf;
+    }
+  }
+  pd->pd_wbuf_sets++;
+  pd->pd_wbuf_set = true;
   uint64_t strt = hrtick();
   pn_bytes_t bytes = pn_connection_driver_write_buffer(&pc->driver);
   pd->wbuf_ticks += hrtick() - strt;
+  pd->pd_wbuf = bytes;
   return bytes;
 }
 
@@ -755,6 +767,10 @@ static void perf_debug_setup(pconnection_t *pc) {
   if (perfw)
     if (*perfw >= '0' && *perfw <= '9')
       pd->w_type = atoi(perfw);
+
+  const char *min_wbuffing = getenv("PN_EPOLL_PD_MINWB");
+  if (min_wbuffing && !(*min_wbuffing == '\0' || *min_wbuffing == '0'))
+    pd->pd_min_wbuffing = true;
 }
 
 static void perf_debug_final(pconnection_t *pc) {
@@ -778,7 +794,7 @@ static void perf_debug_final(pconnection_t *pc) {
             pd->working_ticks, (double)pd->working_ticks*100/run_ticks, 
             pd->wbuf_ticks, (double)pd->wbuf_ticks*100/run_ticks);
 //    fprintf(pd->fp,   "               msg %d   r %d %d %d   w %d %d %d wbuft %" PRIu64 " btot %d  m/b %.2f\n", pd->messages, pd->nr, pd->maxr, pd->maxrr, pd->nw, pd->maxw, pd->maxwr, pd->wbuf_ticks, pd->batches, (double)pd->messages/pd->mbatches);
-    fprintf(pd->fp,   "               ew try %d  yes %d   ignore %d tp %d    writes %d  wf %d\n", pd->n_ewt, pd->n_ew, pd->n_ew_ign, pd->w_type, pd->nw, pd->nwf);
+    fprintf(pd->fp,   "               ew try %d  yes %d   ignore %d tp %d    writes %d  wf %d   pdwbufY  %d %d   %d\n", pd->n_ewt, pd->n_ew, pd->n_ew_ign, pd->w_type, pd->nw, pd->nwf, pd->pd_wbuf_sets, pd->pd_wbuf_skips, pd->pd_min_wbuffing);
   } else {
     fprintf(pd->fp, "no stats\n");
   }    
@@ -1185,6 +1201,8 @@ static pn_event_t *pconnection_batch_next(pn_event_batch_t *batch) {
     }
   }
   if (e && pc->perf_debug) {
+    pc->perf_debug->pd_wbuf_set = false;
+
     switch (pn_event_type(e)) {
     case PN_LINK_REMOTE_OPEN: perf_debug_lopen(pc, pn_event_link(e)); break;
     case PN_LINK_FLOW: perf_debug_flow(pc, pn_event_link(e)); break;
@@ -1303,6 +1321,8 @@ static bool pconnection_write(pconnection_t *pc, pn_bytes_t wbuf) {
   if (n > 0) {
     pn_connection_driver_write_done(&pc->driver, n);
     if ((size_t) n < wbuf.size) pc->write_blocked = true;
+    perf_debug_t *pd = pc->perf_debug;
+    if (pd && pd->pd_min_wbuffing) pd->pd_wbuf_set = false;
   } else if (errno == EWOULDBLOCK) {
     pc->write_blocked = true;
   } else if (!(errno == EAGAIN || errno == EINTR)) {
@@ -1679,6 +1699,7 @@ static void pconnection_tick(pconnection_t *pc) {
     ptimer_set(&pc->timer, 0);
     uint64_t now = pn_i_now2();
     uint64_t next = pn_transport_tick(t, now);
+    if (pc->perf_debug) pc->perf_debug->pd_wbuf_set = false;
     if (next) {
       ptimer_set(&pc->timer, next - now);
     }
