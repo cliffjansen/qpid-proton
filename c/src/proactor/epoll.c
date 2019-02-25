@@ -282,6 +282,7 @@ const char *AMQP_PORT_NAME = "amqp";
 // increasing this value above 1 actually slows performance slightly
 // and increases latency.
 #define HOG_MAX 1
+static int epoll_hog_max = HOG_MAX;
 
 /* pn_proactor_t and pn_listener_t are plain C structs with normal memory management.
    Class definitions are for identification as pn_event_t context only.
@@ -611,6 +612,8 @@ struct perf_debug_t {
   pn_bytes_t pd_wbuf;
   bool pd_wbuf_set, pd_min_wbuffing;
   int pd_wbuf_sets, pd_wbuf_skips;
+  int topups;
+  int max_hogs;
 };
 
 #include "core/engine-internal.h"
@@ -771,6 +774,12 @@ static void perf_debug_setup(pconnection_t *pc) {
   const char *min_wbuffing = getenv("PN_EPOLL_PD_MINWB");
   if (min_wbuffing && !(*min_wbuffing == '\0' || *min_wbuffing == '0'))
     pd->pd_min_wbuffing = true;
+
+  const char *perfhogs = getenv("PN_EPOLL_HOGS");
+  if (perfhogs)
+    if (*perfhogs >= '0' && *perfhogs <= '9')
+      epoll_hog_max = atoi(perfhogs);
+
 }
 
 static void perf_debug_final(pconnection_t *pc) {
@@ -795,6 +804,7 @@ static void perf_debug_final(pconnection_t *pc) {
             pd->wbuf_ticks, (double)pd->wbuf_ticks*100/run_ticks);
 //    fprintf(pd->fp,   "               msg %d   r %d %d %d   w %d %d %d wbuft %" PRIu64 " btot %d  m/b %.2f\n", pd->messages, pd->nr, pd->maxr, pd->maxrr, pd->nw, pd->maxw, pd->maxwr, pd->wbuf_ticks, pd->batches, (double)pd->messages/pd->mbatches);
     fprintf(pd->fp,   "               ew try %d  yes %d   ignore %d tp %d    writes %d  wf %d   pdwbufY  %d %d   %d\n", pd->n_ewt, pd->n_ew, pd->n_ew_ign, pd->w_type, pd->nw, pd->nwf, pd->pd_wbuf_sets, pd->pd_wbuf_skips, pd->pd_min_wbuffing);
+    fprintf(pd->fp,   "               topups %d  max_hogs %d\n", pd->topups, pd->max_hogs);      
   } else {
     fprintf(pd->fp, "no stats\n");
   }    
@@ -1194,7 +1204,7 @@ static pn_event_t *pconnection_batch_next(pn_event_batch_t *batch) {
   if (!e) {
     write_flush(pc);  // May generate transport event
     e = pn_connection_driver_next_event(&pc->driver);
-    if (!e && pc->hog_count < HOG_MAX) {
+    if (!e && pc->hog_count < epoll_hog_max) {
       if (pconnection_process(pc, 0, false, true, false)) {
         e = pn_connection_driver_next_event(&pc->driver);
       }
@@ -1399,6 +1409,7 @@ static pn_event_batch_t *pconnection_process(pconnection_t *pc, uint32_t events,
   if (topup) {
     // Only called by the batch owner.  Does not loop, just "tops up"
     // once.  May be back depending on hog_count.
+    if(pc->perf_debug) { pc->perf_debug->topups++; }
     assert(pc->context.working);
   }
   else {
@@ -1471,6 +1482,7 @@ static pn_event_batch_t *pconnection_process(pconnection_t *pc, uint32_t events,
 
   unlock(&pc->context.mutex);
   pc->hog_count++; // working context doing work
+  if(pc->perf_debug) { if (pc->hog_count > pc->perf_debug->max_hogs) pc->perf_debug->max_hogs = pc->hog_count; }
 
   if (waking) {
     pn_connection_t *c = pc->driver.connection;
