@@ -1307,18 +1307,19 @@ static void pconnection_done(pconnection_t *pc) {
   pc->context.working = false;  // So we can wake() ourself if necessary.  We remain the de facto
                                 // working context while the lock is held.
   pc->hog_count = 0;
-  if (pc->perf_debug) perf_debug_pcdone(pc);
   if (pconnection_has_event(pc) || pconnection_work_pending(pc)) {
     notify = wake(&pc->context);
   } else if (pn_connection_driver_finished(&pc->driver)) {
     pconnection_begin_close(pc);
     if (pconnection_is_final(pc)) {
+      if (pc->perf_debug) perf_debug_pcdone(pc);
       unlock(&pc->context.mutex);
       pconnection_cleanup(pc);
       return;
     }
   }
   bool rearm = pconnection_rearm_check(pc);
+  if (pc->perf_debug) perf_debug_pcdone(pc);
   unlock(&pc->context.mutex);
   if (notify) wake_notify(&pc->context);
   if (rearm) pconnection_rearm(pc);  // May free pc on another thread.  Return.
@@ -1545,12 +1546,12 @@ static pn_event_batch_t *pconnection_process(pconnection_t *pc, uint32_t events,
     goto retry;  // TODO: get rid of goto without adding more locking
 
   pc->context.working = false;
-  if (pc->perf_debug) perf_debug_stop_working(pc);
   pc->hog_count = 0;
   
   if (pn_connection_driver_finished(&pc->driver)) {
     pconnection_begin_close(pc);
     if (pconnection_is_final(pc)) {
+      if (pc->perf_debug) perf_debug_stop_working(pc);
       unlock(&pc->context.mutex);
       pconnection_cleanup(pc);
       return NULL;
@@ -1563,6 +1564,7 @@ static pn_event_batch_t *pconnection_process(pconnection_t *pc, uint32_t events,
   }
   bool rearm_pc = pconnection_rearm_check(pc);  // holds rearm_mutex until pconnection_rearm() below
 
+  if (pc->perf_debug) perf_debug_stop_working(pc);
   unlock(&pc->context.mutex);
   if (rearm_pc) pconnection_rearm(pc);  // May free pc on another thread.  Return right away.
   return NULL;
