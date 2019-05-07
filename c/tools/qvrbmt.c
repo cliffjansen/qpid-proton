@@ -194,6 +194,7 @@ static bool early_flow = false;
 // next two vars thread safe only for single quiver ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ
 //static bool early_flow_set = false;
 //static bool early_flow_wflush = false;
+static bool fg_stacks = false;  // do nothing in main thread so stacks have consistent look
 
 #define Q_NAME_LEN 80
 PN_HANDLE(QVRQ_CTX)
@@ -986,6 +987,7 @@ int main(int argc, char **argv) {
         case 'h': if (i < argc) heartbeat = atoi(argv[i++]); else usage(argv[0]); break;
         case 'c': if (i < argc) strncpy(container_id, argv[i++], sizeof(container_id)); else usage(argv[0]); break;
         case 'C': if (i < argc) n_conns = atoi(argv[i++]); else usage(argv[0]); break;
+        case 'F': fg_stacks = true; break;
         default: usage(argv[0]); break;
         }
     }
@@ -1013,14 +1015,20 @@ int main(int argc, char **argv) {
     fprintf(stderr, "invalid value -t %zu, threads must be > 0\n", b.threads);
     exit(1);
   }
-  /* Start n-1 threads and use main thread */
+  /* Start n-1 threads and use main thread, or do all work outside main thread if a flamegraph run */
+  if (fg_stacks)
+    b.threads++;
   pneg_thread_t* threads = (pneg_thread_t*)calloc(sizeof(pneg_thread_t), b.threads);
   for (size_t i = 0; i < b.threads-1; ++i) {
     check(pneg_thread_create(&threads[i], broker_thread, &b), "pthread_create");
   }
   fprintf(stderr, "ZZZ early flow is %d\n", early_flow);
   fprintf(stderr,"ZZZ bt1\n");fflush(stderr);
-  broker_thread(&b);            /* Use the main thread too. */
+  if (fg_stacks) {
+    while(!b.finished) sleep(1);
+  } else {
+    broker_thread(&b);            /* Use the main thread too. */
+  }
   fprintf(stderr,"ZZZ bt2\n");fflush(stderr);
   for (size_t i = 0; i < b.threads-1; ++i) {
     check(pneg_thread_join(&threads[i]), "pthread_join");
