@@ -590,6 +590,21 @@ uint64_t hrtick(void) {
   return (uint64_t)lo | (((uint64_t)hi) << 32);
 }
 
+uint64_t qvr_start = 0;
+uint64_t qvr_end = 1;
+int qvr_conns = 0;
+uint64_t proactor_start = 0;
+uint64_t proactor_ticks = 0; // time spent in proactor context callbacks during active quiver run
+long proactor_batches = 0;
+long t_batches = 0; // during a profiled run
+long f_batches = 0; // 
+long n_batches = 0; // zero length time callback
+long b_batches = 0; // bad ones. profiling but proactor_start = 0 on done
+long pd_interrupts = 0;
+long pd_timeouts = 0;
+long pd_inactives = 0;
+
+
 static int pd_conn_count = 0;
 
 struct perf_debug_t {
@@ -607,17 +622,21 @@ struct perf_debug_t {
   int w_type;
   int n_ew, n_ewt, n_ew_ign;
   int nwf;
-  bool dbwake_in_progress;
+// ZZZhhh  bool dbwake_in_progress;
   uint64_t working_start, working_ticks;
   pn_bytes_t pd_wbuf;
   bool pd_wbuf_set, pd_min_wbuffing;
   int pd_wbuf_sets, pd_wbuf_skips;
   int topups;
   int max_hogs;
+  int pnp_wflushes, pnp_topups;
+  int wakes;
+  bool is_qvr;
 };
 
 #include "core/engine-internal.h"
 
+#ifdef ZZZhhh
 static void perf_reset_bits(pconnection_t *pc) {
   pc->driver.connection->proactor_bits = 0;
   perf_debug_t *pd = (perf_debug_t *) pc->perf_debug;
@@ -637,7 +656,7 @@ static bool perf_can_write_early(pconnection_t *pc, int rq_type) {
   }
   return false;
 }
-
+#endif
 // transport produce 
 
 static pn_bytes_t perf_debug_wbuf(pconnection_t *pc) {
@@ -721,6 +740,7 @@ static void perf_debug_pcdone(pconnection_t *pc) {
   perf_debug_t *pd = (perf_debug_t *) pc->perf_debug;
   uint64_t now = perf_debug_stop_working(pc);
   pd->batching = false;
+  pd->batches++;
   if (pd->is_sender && pd->start && pd->link && !pd->zc_start && pn_link_credit(pd->link) <= 0) {
     pd->zc_start = now;
     pd->zc_count++;
@@ -740,8 +760,31 @@ static void perf_debug_tpclose(pconnection_t *pc, pn_transport_t *t) {
   if (pd->start && !pd->end) pd->end = hrtick();
   if (pd->zc_start) pd->zc_start = 0; // zero credit at end of run is not starvation
   pd->link = NULL;
+  if (pd->is_qvr) {
+    pn_proactor_t *p = pc->context.proactor;
+    lock(&p->context.mutex);
+    if (--qvr_conns == 0) {
+      qvr_end = hrtick();
+    }
+    unlock(&p->context.mutex);
+  }
 }
 
+static void perf_debug_copen(pconnection_t *pc) {
+  perf_debug_t *pd = pc->perf_debug;
+  if (strncmp(pn_connection_remote_container(pc->driver.connection), "quiver-", 7) == 0) {
+    pd->is_qvr = true;
+    pn_proactor_t *p = pc->context.proactor;
+    lock(&p->context.mutex);
+    if (qvr_end == 1) {
+      assert(qvr_conns == 0);
+      qvr_end = 0;
+      qvr_start = hrtick();
+    }
+    qvr_conns++;
+    unlock(&p->context.mutex);
+  }
+}
 
 
 static void perf_debug_setup(pconnection_t *pc) {
@@ -790,6 +833,7 @@ static void perf_debug_final(pconnection_t *pc) {
     pd->end = now;
   // uint64_t life_ticks = now - creation_time
   uint64_t run_ticks = pd->end - pd->start;
+#ifdef oldZZZ
   if (run_ticks) {
     if (pd->is_sender) {
       fprintf(pd->fp, "sender stats... run %" PRIu64 " wb %d  %" PRIu64  " (%.2f)  no cr %d  %" PRIu64 " (%.2f)\n", 
@@ -803,8 +847,40 @@ static void perf_debug_final(pconnection_t *pc) {
             pd->working_ticks, (double)pd->working_ticks*100/run_ticks, 
             pd->wbuf_ticks, (double)pd->wbuf_ticks*100/run_ticks);
 //    fprintf(pd->fp,   "               msg %d   r %d %d %d   w %d %d %d wbuft %" PRIu64 " btot %d  m/b %.2f\n", pd->messages, pd->nr, pd->maxr, pd->maxrr, pd->nw, pd->maxw, pd->maxwr, pd->wbuf_ticks, pd->batches, (double)pd->messages/pd->mbatches);
+    fprintf(pd->fp,   "               batches %d  conn wakes %d   appflsh %d  appread %d\n", pd->batches, pd->wakes, pd->pnp_wflushes, pd->pnp_topups);
     fprintf(pd->fp,   "               ew try %d  yes %d   ignore %d tp %d    writes %d  wf %d   pdwbufY  %d %d   %d\n", pd->n_ewt, pd->n_ew, pd->n_ew_ign, pd->w_type, pd->nw, pd->nwf, pd->pd_wbuf_sets, pd->pd_wbuf_skips, pd->pd_min_wbuffing);
     fprintf(pd->fp,   "               topups %d  max_hogs %d\n", pd->topups, pd->max_hogs);      
+    if (proactor_ticks) {
+      uint64_t prunticks = qvr_end > 1 ? qvr_end - qvr_start : now - qvr_start;
+      fprintf(pd->fp,   "    p ctx  run %" PRIu64 "  ctx %" PRIu64 " (%.2f)   batches %ld\n", prunticks, proactor_ticks, (double)proactor_ticks*100/prunticks, proactor_batches);
+      fprintf(pd->fp,   "    p ctx2 %ld %ld %ld\n", t_batches, n_batches, b_batches);
+
+    }
+  } else {
+    fprintf(pd->fp, "no stats\n");
+  }    
+#endif
+  if (run_ticks) {
+    if (pd->is_sender) {
+      fprintf(pd->fp, "sender stats...run %" PRIu64 "   no credit %d  %" PRIu64 " (%.2f)\n", 
+              run_ticks, pd->zc_count, pd->zc_ticks, (double)pd->zc_ticks*100/run_ticks);
+    } else {
+      fprintf(pd->fp, "rcv stats...   run %" PRIu64 " \n", run_ticks);
+
+    }
+    if (pd->wb_count)
+      fprintf(pd->fp, "             write_blocked  %d  %" PRIu64 " (%.2f)\n",
+              pd->wb_count, pd->wb_ticks, (double)pd->wb_ticks*100/run_ticks);
+
+    fprintf(pd->fp,   "               work_tics %" PRIu64  " (%.2f)     tp_produce %" PRIu64  " (%.2f) \n",
+            pd->working_ticks, (double)pd->working_ticks*100/run_ticks, 
+            pd->wbuf_ticks, (double)pd->wbuf_ticks*100/run_ticks);
+    fprintf(pd->fp,   "               batches %d  conn wakes %d  topups %d  max_hogs %d \n", pd->batches, pd->wakes, pd->topups, pd->max_hogs);
+    if (proactor_ticks) {
+      uint64_t prunticks = qvr_end > 1 ? qvr_end - qvr_start : now - qvr_start;
+      fprintf(pd->fp,   "    p ctx  run %" PRIu64 "  ctx %" PRIu64 " (%.2f)   batches %ld  INT %ld  TIMEOUT %ld  INACTIV %ld\n", prunticks, proactor_ticks, (double)proactor_ticks*100/prunticks, proactor_batches, pd_interrupts, pd_timeouts, pd_inactives);
+      fprintf(pd->fp,   "    p ctx2 %ld %ld %ld\n", t_batches, n_batches, b_batches);
+    }
   } else {
     fprintf(pd->fp, "no stats\n");
   }    
@@ -1192,22 +1268,23 @@ static void pconnection_forced_shutdown(pconnection_t *pc) {
 
 static pn_event_t *pconnection_batch_next(pn_event_batch_t *batch) {
   pconnection_t *pc = batch_pconnection(batch);
+#ifdef ZZZhhh
   if (pc->perf_debug) {
     if (pc->perf_debug->dbwake_in_progress) {
       if (perf_can_write_early(pc, 2)) write_flush(pc);
     }
     pc->perf_debug->dbwake_in_progress = false;
   }
-    
+#endif
+
   if (!pc->driver.connection) return NULL;
   pn_event_t *e = pn_connection_driver_next_event(&pc->driver);
   if (!e) {
     write_flush(pc);  // May generate transport event
     e = pn_connection_driver_next_event(&pc->driver);
     if (!e && pc->hog_count < epoll_hog_max) {
-      if (pconnection_process(pc, 0, false, true, false)) {
-        e = pn_connection_driver_next_event(&pc->driver);
-      }
+      pconnection_process(pc, 0, false, true, false);  // Topup from read side if allowed
+      e = pn_connection_driver_next_event(&pc->driver);
     }
   }
   if (e && pc->perf_debug) {
@@ -1219,7 +1296,9 @@ static pn_event_t *pconnection_batch_next(pn_event_batch_t *batch) {
     case PN_LINK_REMOTE_CLOSE: perf_debug_lclose(pc, pn_event_link(e)); break;
     case PN_DELIVERY: perf_debug_delivery(pc, pn_event_delivery(e)); break;
     case PN_TRANSPORT_CLOSED: perf_debug_tpclose(pc, pn_event_transport(e)); break;
-    case PN_CONNECTION_WAKE: pc->perf_debug->dbwake_in_progress = true; break;
+// ZZZhhh    case PN_CONNECTION_WAKE: pc->perf_debug->dbwake_in_progress = true; break;
+    case PN_CONNECTION_REMOTE_OPEN: perf_debug_copen(pc); break;
+// use TP closed    case PN_CONNECTION_REMOTE_CLOSE: perf_debug_cclose(pc); break;
     default: break;
     }
   }
@@ -1333,9 +1412,16 @@ static bool pconnection_write(pconnection_t *pc, pn_bytes_t wbuf) {
     pn_connection_driver_write_done(&pc->driver, n);
     if ((size_t) n < wbuf.size) pc->write_blocked = true;
     perf_debug_t *pd = pc->perf_debug;
-    if (pd && pd->pd_min_wbuffing) pd->pd_wbuf_set = false;
+    if (pd) {
+      if (pd->pd_min_wbuffing) pd->pd_wbuf_set = false;
+      if ((size_t) n < wbuf.size && !pd->wb_start) pd->wb_start = hrtick();
+    }
   } else if (errno == EWOULDBLOCK) {
     pc->write_blocked = true;
+    perf_debug_t *pd = pc->perf_debug;
+    if (pd) {
+      if (!pd->wb_start) pd->wb_start = hrtick();
+    }
   } else if (!(errno == EAGAIN || errno == EINTR)) {
     return false;
   }
@@ -1346,7 +1432,7 @@ static void write_flush(pconnection_t *pc) {
   if (!pc->write_blocked && !pconnection_wclosed(pc)) {
 //    pn_bytes_t wbuf = pn_connection_driver_write_buffer(&pc->driver);
     pn_bytes_t wbuf = get_wbuf(pc);
-    if (pc->perf_debug) perf_reset_bits(pc);
+// ZZZhhh   if (pc->perf_debug) perf_reset_bits(pc);
     if (wbuf.size > 0) {
       if (!pconnection_write(pc, wbuf)) {
         psocket_error(&pc->psocket, errno, pc->disconnected ? "disconnected" : "on write to");
@@ -1468,8 +1554,17 @@ static pn_event_batch_t *pconnection_process(pconnection_t *pc, uint32_t events,
         pconnection_maybe_connect_lh(pc);
       else
         pconnection_connected_lh(pc); /* Non error event means we are connected */
-      if (update_events & EPOLLOUT)
+      if (update_events & EPOLLOUT) {
         pc->write_blocked = false;
+        perf_debug_t *pd = pc->perf_debug;
+        if (pd) {
+          if (pd->wb_start) {
+            pd->wb_ticks += (hrtick() - pd->wb_start);
+            pd->wb_count += 1;
+            pd->wb_start = 0;
+          }
+        }
+      }
       if (update_events & EPOLLIN)
         pc->read_blocked = false;
     }
@@ -1489,6 +1584,7 @@ static pn_event_batch_t *pconnection_process(pconnection_t *pc, uint32_t events,
     pn_connection_t *c = pc->driver.connection;
     pn_collector_put(pn_connection_collector(c), PN_OBJECT, c, PN_CONNECTION_WAKE);
     waking = false;
+    if(pc->perf_debug) pc->perf_debug->wakes++;
   }
 
   // read... tick... write
@@ -1524,7 +1620,7 @@ static pn_event_batch_t *pconnection_process(pconnection_t *pc, uint32_t events,
 
   if (topup) {
     // If there was anything new to topup, we have it by now.
-    if (pc->perf_debug && (perf_can_write_early(pc, 1))) write_flush(pc);
+// ZZZhhh    if (pc->perf_debug && (perf_can_write_early(pc, 1))) write_flush(pc);
     return NULL;  // caller already owns the batch
   }
 
@@ -2244,16 +2340,19 @@ static bool proactor_update_batch(pn_proactor_t *p) {
     p->need_timeout = false;
     p->timeout_set = false;
     proactor_add_event(p, PN_PROACTOR_TIMEOUT);
+    if (qvr_end == 0) pd_timeouts++;
     return true;
   }
   if (p->need_interrupt) {
     p->need_interrupt = false;
     proactor_add_event(p, PN_PROACTOR_INTERRUPT);
+    if (qvr_end == 0) pd_interrupts++;
     return true;
   }
   if (p->need_inactive) {
     p->need_inactive = false;
     proactor_add_event(p, PN_PROACTOR_INACTIVE);
+    if (qvr_end == 0) pd_inactives++;
     return true;
   }
   return false;
@@ -2287,6 +2386,10 @@ static pn_event_batch_t *proactor_process(pn_proactor_t *p, pn_event_type_t even
     if (proactor_update_batch(p)) {
       p->context.working = true;
       unlock(&p->context.mutex);
+      if (!qvr_end) {
+        assert (proactor_start == 0);
+        proactor_start = hrtick();
+      }
       return &p->batch;
     }
   }
@@ -2337,11 +2440,11 @@ static bool proactor_remove(pcontext_t *ctx) {
   bool can_free = true;
   if (ctx->disconnecting) {
     // No longer on contexts list
-    if (--ctx->disconnect_ops == 0) {
-      --p->disconnects_pending;
+    --p->disconnects_pending;
+    if (--ctx->disconnect_ops != 0) {
+      // procator_disconnect() does the free
+      can_free = false;
     }
-    else                  // procator_disconnect() still processing
-      can_free = false;   // this psocket
   }
   else {
     // normal case
@@ -2461,6 +2564,20 @@ void pn_proactor_done(pn_proactor_t *p, pn_event_batch_t *batch) {
   if (bp == p) {
     bool notify = false;
     lock(&p->context.mutex);
+    proactor_batches++;
+    if (qvr_end == 0) t_batches++;
+    if ((qvr_end == 0) && proactor_start == 0) b_batches++;
+    if (!qvr_end) {
+      if (proactor_start) {
+        uint64_t diff = hrtick() - proactor_start;
+        if (diff == 0)
+          n_batches++;
+        else {
+          proactor_ticks += diff;
+          proactor_start = 0;
+        }
+      }
+    }
     bool rearm_timer = !p->timer_armed && !p->shutting_down;
     p->timer_armed = true;
     p->context.working = false;
@@ -2548,13 +2665,14 @@ void pn_proactor_disconnect(pn_proactor_t *p, pn_condition_t *cond) {
     ctx = next;
     next = ctx->next;           /* Save next pointer in case we free ctx */
     bool do_free = false;
-    bool ctx_notify = true;
+    bool ctx_notify = false;
     pmutex *ctx_mutex = NULL;
     pconnection_t *pc = pcontext_pconnection(ctx);
     if (pc) {
       ctx_mutex = &pc->context.mutex;
       lock(ctx_mutex);
       if (!ctx->closing) {
+        ctx_notify = true;
         if (ctx->working) {
           // Must defer
           pc->queued_disconnect = true;
@@ -2578,6 +2696,7 @@ void pn_proactor_disconnect(pn_proactor_t *p, pn_condition_t *cond) {
       ctx_mutex = &l->context.mutex;
       lock(ctx_mutex);
       if (!ctx->closing) {
+        ctx_notify = true;
         if (cond) {
           pn_condition_copy(pn_listener_condition(l), cond);
         }
@@ -2594,6 +2713,8 @@ void pn_proactor_disconnect(pn_proactor_t *p, pn_condition_t *cond) {
       // If initiating the close, wake the pcontext to do the free.
       if (ctx_notify)
         ctx_notify = wake(ctx);
+      if (ctx_notify)
+        wake_notify(ctx);
     }
     unlock(&p->context.mutex);
     unlock(ctx_mutex);
@@ -2601,9 +2722,6 @@ void pn_proactor_disconnect(pn_proactor_t *p, pn_condition_t *cond) {
     if (do_free) {
       if (pc) pconnection_final_free(pc);
       else listener_final_free(pcontext_listener(ctx));
-    } else {
-      if (ctx_notify)
-        wake_notify(ctx);
     }
   }
   if (notify)
