@@ -124,7 +124,13 @@ pmutex global_mutex;
 
 bool sasl_anon = false;
 
+int max_batch = 0;
+int stopped_batches = 0;
+int msg_stops = 0;
 bool enable_debug = false;
+int wakes_done = 0;
+int wakes = 0;
+long long link_counter = 0;
 
 void debug(const char* fmt, ...) {
   if (enable_debug) {
@@ -190,20 +196,34 @@ void check_true(bool is_true, const char *msg) {
   } while(0)
 
 
-static bool early_flow = false;
-// next two vars thread safe only for single quiver ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ
-//static bool early_flow_set = false;
-//static bool early_flow_wflush = false;
 static bool fg_stacks = false;  // do nothing in main thread so stacks have consistent look
 
 #define Q_NAME_LEN 80
 PN_HANDLE(QVRQ_CTX)
+
+/* The broker implementation */
+typedef struct broker_t {
+  pn_proactor_t *proactor;
+  const char *container_id;     /* AMQP container-id */
+  size_t threads;
+  size_t conns;
+  size_t max_conns;
+  pn_millis_t heartbeat;
+  bool finished;
+  const char* next_hop;         /* autolink destination */
+} broker_t;
+
+
 
 typedef struct msg_t msg_t;
 typedef struct connection_context_t connection_context_t;
 /*
  * a msg_t goes from: free_list->inbound->outbound->"no list"->accepted->free_list
  */
+
+// Phase 0 and 1 are senders/receivers respectively (like dispatch).  
+typedef enum { PH0 = 0, PH1 = 1, PH_NONE = 2 } qvrq_phase_t;
+
 
 struct qvrq {
   // static post link setup
@@ -212,7 +232,9 @@ struct qvrq {
   connection_context_t *incc;
   connection_context_t *outcc;
   int credit_window;
-  char name[Q_NAME_LEN];
+  const char* name;
+  qvrq_phase_t phase;
+  pn_connection_t *next_hop_c;  // ZZZ used?
   struct qvrq* next;
   // ZZZ cache line padding?
   // owned by inbound connection
@@ -220,13 +242,14 @@ struct qvrq {
   msg_t *inbound_tail;
   uint64_t zero_c_start;
   uint64_t zero_c_ticks;
+  int inbound_batched;
   // owned by outbound connection
   msg_t *accepted_head;
   msg_t *accepted_tail;
   size_t sent_count;
   size_t accept_count;
   int last_credit;
-  bool early_flow_set;
+  int outbound_batched;
   // Other
   pmutex qlock;
   int conn_count;
@@ -240,7 +263,7 @@ struct qvrq {
   msg_t *complete_head;
   msg_t *complete_tail;
   int outbound_count;
-  bool early_flow_wflush;
+  bool next_hop_closing;
 };
 
 typedef struct qvrq qvrq_t;
@@ -254,12 +277,14 @@ typedef struct connection_context_t {
   pn_connection_t *connection;
   int cswitch;
   bool inbound_c;
+  bool closing;
   bool closed;
   pmutex memory_barrier;
   uint64_t creation;
   uint64_t start;
   pmutex wake_lock;
   bool can_wake;
+  int wake_count;
 } connection_context_t;
 
 
@@ -273,12 +298,12 @@ qvrq_t * get_context(pn_link_t *l) {
   return (qvrq_t *) pn_record_get(pn_link_attachments(l), QVRQ_CTX);
 }
 
-static qvrq_t *qvrq_find(const char *nm) {
+static qvrq_t *qvrq_find(const char *nm, qvrq_phase_t phase) {
   size_t len = strlen(nm);
   qvrq_t *qvrq = qvrq_start;
   qvrq_t *last = NULL;
   while (qvrq) {
-    if (!strncmp(qvrq->name, nm, len)) {
+    if (!strncmp(qvrq->name, nm, len) && phase == qvrq->phase) {
       check_true((qvrq->inlink == NULL || qvrq->outlink == NULL), "more than one sender and one receiver to queue");
       return qvrq;
     }
@@ -286,7 +311,10 @@ static qvrq_t *qvrq_find(const char *nm) {
     qvrq = qvrq->next;
   }
   qvrq_t *neq = calloc(sizeof(qvrq_t), 1);
-  strcpy(neq->name, nm);
+  char *qname = (char *) malloc(len + 1);
+  strcpy(qname, nm);
+  neq->name = qname;
+  neq->phase = phase;
   pmutex_init(&neq->qlock);
   if (qvrq_start == NULL)
     qvrq_start = neq;
@@ -295,28 +323,33 @@ static qvrq_t *qvrq_find(const char *nm) {
   return neq;
 }
 
+static connection_context_t *cc_from_link(pn_link_t *l);
 
-static const char* qname(const char* n) {
-  // point to last 5 chars
-  size_t len = strlen(n);
-  check_true(len <= (Q_NAME_LEN - 1), "nm len");
-  return n;
-}
-
-void qvrq_add_link(pn_link_t *l, qvrq_t **pq) {
-  if (pn_link_is_sender(l)) {
-    qvrq_t *qvrq = qvrq_find(qname(pn_terminus_get_address(pn_link_remote_source(l))));
-    check_true(qvrq->outlink == NULL, "addlink out not null");
-    qvrq->outlink = l;
-    set_context(l, qvrq);
-    *pq = qvrq;
+void qvrq_add_link(broker_t *b, pn_link_t *l, qvrq_t **pq) {
+  qvrq_t *qvrq = NULL;
+  connection_context_t *cc = cc_from_link(l);
+  if (cc->q) {
+    qvrq = cc->q;
+    check_true(qvrq && *pq == qvrq, "missing qvrq on outgoing connection");
   } else {
-    qvrq_t *qvrq = qvrq_find(qname(pn_terminus_get_address(pn_link_remote_target(l))));
-    check_true(qvrq->inlink == NULL, "addlink in not null");
-    qvrq->inlink = l;
-    set_context(l, qvrq);
+    if (pn_link_is_sender(l)) {
+      qvrq_phase_t phase = b->next_hop ? PH1 : PH_NONE;
+      qvrq = qvrq_find(pn_terminus_get_address(pn_link_remote_source(l)), phase);
+    } else {
+      qvrq_phase_t phase = b->next_hop ? PH0 : PH_NONE;
+      qvrq = qvrq_find(pn_terminus_get_address(pn_link_remote_target(l)), phase);
+    }  
     *pq = qvrq;
   }
+
+  if (pn_link_is_sender(l)) {
+    check_true(qvrq->outlink == NULL, "addlink out not null");
+    qvrq->outlink = l;
+  } else {
+    check_true(qvrq->inlink == NULL, "addlink in not null");
+    qvrq->inlink = l;
+  }
+  set_context(l, qvrq);
 }
 
 void qvrq_remove_link(pn_link_t *l) {
@@ -327,24 +360,15 @@ void qvrq_remove_link(pn_link_t *l) {
   }
 }
 
-/* The broker implementation */
-typedef struct broker_t {
-  pn_proactor_t *proactor;
-  const char *container_id;     /* AMQP container-id */
-  size_t threads;
-  size_t conns;
-  size_t max_conns;
-  pn_millis_t heartbeat;
-  bool finished;
-} broker_t;
-
-void broker_init(broker_t *b, const char *container_id, size_t threads, pn_millis_t heartbeat, size_t n_conns) {
+void broker_init(broker_t *b, const char *container_id, size_t threads,
+                 pn_millis_t heartbeat, size_t n_conns, const char *rurl) {
   memset(b, 0, sizeof(*b));
   b->proactor = pn_proactor();
   b->container_id = container_id;
   b->threads = threads;
   b->heartbeat = 0;
   b->max_conns = n_conns;
+  b->next_hop = rurl;
 }
 
 void broker_stop(broker_t *b) {
@@ -356,7 +380,7 @@ void broker_stop(broker_t *b) {
 static void check_condition(pn_event_t *e, pn_condition_t *cond) {
   if (pn_condition_is_set(cond)) {
     const char *ename = e ? pn_event_type_name(pn_event_type(e)) : "UNKNOWN";
-    fprintf(stderr, "%s: %s: %s\n", ename,
+    fprintf(stderr, "CHECK:     %s: %s: %s\n", ename,
             pn_condition_get_name(cond), pn_condition_get_description(cond));
   }
 }
@@ -404,9 +428,10 @@ static void qvrq_destroy(qvrq_t *q) {
   for (int i = 0; i < q->msg_count; i++)
     free(q->msgs[i].buf);
   free(q->msgs);
-  fprintf(stderr, "ZZZ destroyed q %s\n", q->name);
+  fprintf(stderr, "ZZZ destroyed q %s    stopped_batches  %d %d , wakes %d %d\n", q->name, stopped_batches, msg_stops, wakes, wakes_done);
 //  if (q->inlink) pn_link_free(q->inlink);  core dump.  need incref?
 //  if (q->outlink) pn_link_free(q->outlink);
+  free((void *) q->name);
   pmutex_finalize(&q->qlock);
   free(q);
 }
@@ -418,8 +443,11 @@ static void wake_other(connection_context_t *cc) {
     check_true(cc != cc2, "ZZZ just checking... dump this");
     if (cc2) {
       lock(&cc2->wake_lock);
-      if (cc2->can_wake)
+      if (cc2->can_wake && cc2->wake_count == 0) {
         pn_connection_wake(cc2->connection);
+        cc2->wake_count++;
+        wakes++;
+      }
       unlock(&cc2->wake_lock);
     }
   }
@@ -458,38 +486,15 @@ static void set_c_context(pn_connection_t *c, connection_context_t *cc) {
 }
 
 static void cc_destroy(connection_context_t *cc) {
-  set_c_context(cc->connection, NULL);
   pmutex_finalize(&cc->memory_barrier);
   pmutex_finalize(&cc->wake_lock);
   free(cc);
 }
 
-
 //const int WINDOW=10;            /* Incoming credit window */
 int WINDOW_old=10;            /* Incoming credit window */
 
 static void update_credit(connection_context_t *cc, int extra) {
-  if (early_flow) {
-    lock(&cc->q->qlock);
-    if (cc->q->early_flow_set) {
-      cc->q->early_flow_set = false;
-      // pn_link_credit on other connection is thread safe (currently, not guaranteed) and useful with lock/memory barrier
-      int delta = pn_link_credit(cc->q->outlink) - pn_link_remote_credit(cc->q->inlink);
-      if (delta > 0) {
-        cc->q->early_flow_wflush = true;
-        pn_link_flow(cc->q->inlink, delta);
-        if (cc->q->zero_c_start) {
-          uint64_t now = hrtick();
-          cc->q->zero_c_ticks += now - cc->q->zero_c_start;
-          cc->q->zero_c_start = 0;
-        }
-
-      }
-//      fprintf(stderr, "ZZZz AG credit foo  %d  %d %d %d\n", delta, pn_link_credit(cc->q->outlink), pn_link_credit(cc->q->inlink), pn_link_remote_credit(cc->q->inlink));
-    }
-    unlock(&cc->q->qlock);
-    return;
-  }
   if (extra > 0) {
     pn_link_flow(cc->q->inlink, extra);
     check_true(pn_link_credit(cc->q->inlink) <= cc->q->msg_count, "too much credit granted to sender");
@@ -553,7 +558,6 @@ static void context_end(connection_context_t *cc) {
     if (extra_credit) {
       update_credit(cc, extra_credit);
     } else if (initial_credit) {
-      if (early_flow) { q->early_flow_set = true; q->last_credit = initial_credit; }
       update_credit(cc, initial_credit);
     }
   } else {
@@ -562,12 +566,7 @@ static void context_end(connection_context_t *cc) {
     if (enable_debug) { debug("ZZZ outbound %p  ah  %p  ic %d  oh %p", cc->connection, q->accepted_head, q->initial_credit, q->outbound_head); }
     bool wake_needed = false;  // for wake outside lock
     int current_credit = pn_link_credit(q->outlink);
-    if (early_flow && q->last_credit != current_credit) {
-      wake_needed = true;
-      q->last_credit = current_credit;
-    }
     lock(&q->qlock);
-    if (early_flow && wake_needed) { q->early_flow_set = true; }
     if (q->accepted_head) {
       wake_needed = true;
       if (enable_debug) { debug("ZZZ w3  accepted %p", q->incc->connection); }
@@ -604,34 +603,54 @@ static void context_end(connection_context_t *cc) {
       oldm->next = NULL;
       oldm->buf_size = 0;
     }
-    // Should never be out of credit unless receiver lowered it in an un-quiver way.
-    if (!early_flow)
-      check_true(!outbound_list || pn_link_credit(q->outlink) >= 0, "message credit mismatch");
   }
 
+  if (cc->closing || cc->closed) {
+    fprintf(stderr, "ZZZend %p %d %d %d\n", (void *) cc->connection, cc->closing, cc->closed, cc->wake_count);
+  }
+
+  if (cc->closing) {
+    cc->closing = false;
+    cc->closed = true;
+//    fprintf(stderr, "ZZZ ctx_end and waking self closing->closed  %p\n", (void *) cc->connection);  fflush(stderr);
+//    pn_connection_wake(cc->connection);
+    // above doesn't work.  Bug in epoll proactor?
+//    pn_collector_put(pn_connection_collector(cc->connection), PN_OBJECT, cc->connection, PN_CONNECTION_WAKE);
+    // above also doesn't work???
+  }
+  else if (!cc->closed) {
+    bool wake_needed = false;
+    lock(&cc->wake_lock);
+    if (cc->wake_count > 0)
+      wake_needed = true;
+    unlock(&cc->wake_lock);
+    if (wake_needed)
+      pn_connection_wake(cc->connection);  // More to do
+  }
+
+  if (cc->closing || cc->closed) {
+    fprintf(stderr, "ZZZend2 %p %d %d\n", (void *) cc->connection, cc->closed, cc->q->conn_count);
+  }
   if (cc->closed) {
-    if (cc->q) {
-      bool last_c = false;
-      lock(&cc->q->qlock);
-      cc->q->conn_count--;  //  cc and q may both be gone after lock released
-      if (cc->q->conn_count == 0) last_c = true;
-      unlock(&cc->q->qlock);
-      if (last_c) {
-        if (cc->q->sent_count) check_true(cc->q->sent_count == cc->q->accept_count, "shutdown accept mismatch");
-        connection_context_t *incc = cc->q->incc;
-        connection_context_t *outcc = cc->q->outcc;
-        lock(&global_mutex);
-        qvrq_destroy(cc->q);
-        unlock(&global_mutex);
-        cc_destroy(incc);
-        cc_destroy(outcc);
-      }
-      return;
-    } else {
-      // not associated with a q
-      cc_destroy(cc);
-      return;
-    }
+    bool last_c = false;
+    lock(&cc->q->qlock);
+    cc->q->conn_count--;  //  cc and q may both be gone after lock released
+    if (cc->q->conn_count == 0) last_c = true;
+    long long ZZZi = cc->q->sent_count - cc->q->accept_count;
+    
+    fprintf(stderr, "        ZZZ closed time %d %s %d %lld    %p %p   %d\n", last_c, cc->q->name, cc->q->phase, ZZZi, (void *) cc->connection, cc->q->next_hop_c, cc->inbound_c);
+    fflush(stderr);
+    unlock(&cc->q->qlock);
+    if (!last_c) return;
+    // We are assigned cleanup.
+    if (cc->q->sent_count) check_true(cc->q->sent_count == cc->q->accept_count, "shutdown accept mismatch");
+    connection_context_t *incc = cc->q->incc;
+    connection_context_t *outcc = cc->q->outcc;
+    lock(&global_mutex);
+    qvrq_destroy(cc->q);
+    unlock(&global_mutex);
+    cc_destroy(incc);
+    cc_destroy(outcc);
   }
 }
 
@@ -641,7 +660,7 @@ static void context_end(connection_context_t *cc) {
    connection context boundaries.
 */
 
-static void handle(broker_t* b, pn_event_t* e, void **app_ctx, bool *wflush) {
+static void handle(broker_t* b, pn_event_t* e, void **app_ctx, bool *stop_current_batch) {
   pn_connection_t *c = NULL;
 
   if (e) {
@@ -652,6 +671,12 @@ static void handle(broker_t* b, pn_event_t* e, void **app_ctx, bool *wflush) {
         connection_context_t *cc = get_c_context(c);
         if (cc) {
           cc_memory_barrier(cc);
+          if (cc->q) {
+            if (cc->inbound_c)
+              cc->q->inbound_batched = 0;
+            else
+              cc->q->outbound_batched = 0;
+          }
           if (cc->inbound_c && cc->q && cc->q->inlink && !cc->q->zero_c_start) {
             // Set before processing events.  Under-represents true
             // start time by network xmit time and proton
@@ -659,15 +684,6 @@ static void handle(broker_t* b, pn_event_t* e, void **app_ctx, bool *wflush) {
             if (pn_link_remote_credit(cc->q->inlink) <= 0)
               cc->q->zero_c_start = hrtick();
           }
-          if (cc->inbound_c && cc->q && cc->q->inlink) {
-            int ZZZq = pn_link_queued(cc->q->inlink);
-//            fprintf(stderr, "ZZZz bstart %d %d\n", ZZZq, (cc->q->zero_c_start != 0));
-            if (cc->q->outlink && early_flow) {
-              update_credit(cc, 0);
-              if (cc->q->early_flow_wflush) { *wflush = true; cc->q->early_flow_wflush = false; }
-            }
-          }
-                    
         }
       }
     } else {
@@ -694,8 +710,31 @@ static void handle(broker_t* b, pn_event_t* e, void **app_ctx, bool *wflush) {
 
    case PN_CONNECTION_INIT: 
      c = pn_event_connection(e);
-     set_c_context(c, new_c_context());
      connection_context_t *cc = get_c_context(c);
+     if (cc) {
+       // Outgoing connection we created to the next hop, after obtaining qeueue name info and phase.
+       pn_session_t* s = pn_session(c);
+       pn_connection_open(c);
+       pn_session_open(s);
+       lock(&global_mutex);
+       int uid = link_counter++;
+       unlock(&global_mutex);
+       char fakeuuid[128];  // Sufficient uniqueness for our test purposes
+       
+       sprintf(fakeuuid, "%lld_", uid);
+       strcat(fakeuuid, b->container_id);
+       pn_link_t* l = (cc->q->phase == PH0) ? pn_sender(s, cc->q->name) : pn_receiver(s, cc->q->name);
+       if (cc->q->phase == PH0)
+         pn_terminus_set_address(pn_link_target(l), cc->q->name);       
+       else
+         pn_terminus_set_address(pn_link_source(l), cc->q->name);
+       pn_link_open(l);
+     } else {
+       // Connection from the listener.
+       cc = new_c_context();
+       set_c_context(c, cc);
+     }
+
      cc->connection = c;
      lock(&cc->wake_lock);
      cc->can_wake = true;
@@ -723,13 +762,28 @@ static void handle(broker_t* b, pn_event_t* e, void **app_ctx, bool *wflush) {
      break;
    }
    case PN_CONNECTION_WAKE: {
+     wakes_done++;
      connection_context_t *cc = get_c_context(c);
-     check_true(cc, "connection wake with no set context");
+     if (!cc) {          fprintf(stderr, "ZZZ CON WAKE, no cc \n");  fflush(stderr); }
+     if (!cc)
+       break;
+//     fprintf(stderr, "ZZZ CON WAKE, %p \n", (void *) c);  fflush(stderr);
      if (enable_debug) { debug("ZZZ ***   wake   ***   %p", c); }
-     if (early_flow && cc->inbound_c && cc->q->inlink && cc->q->outlink)
-       update_credit(cc, 0);
-     if (cc->inbound_c && cc->q->early_flow_wflush) { *wflush = true; cc->q->early_flow_wflush = false; }
+     lock(&cc->wake_lock);
+     cc->wake_count = 0;
+     unlock(&cc->wake_lock);
+     if (!cc->can_wake)
+       break;
+
+     if (cc->closed || cc->closing) { fprintf(stderr, "ZZZ WAKE closeroo %p %d %d\n", (void *) cc->connection, cc->closed, cc->closing);  fflush(stderr); }
      // ZZZ count ??
+     if (cc->q && cc->q->next_hop_closing && cc->q->next_hop_c == c) {
+       pn_link_t *l = (cc->q->phase == PH0) ? cc->q->outlink : cc->q->inlink;
+       pn_link_close(l);
+       cc->q->next_hop_closing = false;
+     }
+     if (max_batch && cc->inbound_c)
+       *stop_current_batch = true;  // check if we got new credit or dispositions first??  Why else a wake?
      break;
    }
    case PN_SESSION_REMOTE_OPEN: {
@@ -738,10 +792,14 @@ static void handle(broker_t* b, pn_event_t* e, void **app_ctx, bool *wflush) {
    }
    case PN_LINK_REMOTE_OPEN: {
      pn_link_t *l = pn_event_link(e);
+     pn_connection_t *conn = pn_event_connection(e);
+     pn_transport_t *tp = pn_event_transport(e);
      connection_context_t *cc = cc_from_link(l);
-     check_true(cc->q == NULL, "2nd link opened on connection");
+//     printf("ZZZ l remote open %p %p %p %p\n", (void *) l, (void *) conn, (void *) tp, (void *) cc);
+     if (!b->next_hop)
+       check_true(cc->q == NULL, "2nd link opened on connection");
      lock(&global_mutex);
-     qvrq_add_link(l, &cc->q);
+     qvrq_add_link(b, l, &cc->q);
      unlock(&global_mutex);
      if (pn_link_is_sender(l)) {
        const char *source = pn_terminus_get_address(pn_link_remote_source(l));
@@ -757,13 +815,27 @@ static void handle(broker_t* b, pn_event_t* e, void **app_ctx, bool *wflush) {
      cc->q->conn_count++;
      if (cc->q->conn_count == 2)
        cc->q->incc->start = cc->q->outcc->start = hrtick();
+     else {
+       if (b->next_hop) {
+         connection_context_t *cc2 = new_c_context();
+         cc2->q = cc->q;
+         cc2->q->next_hop_c = pn_connection();
+         set_c_context(cc2->q->next_hop_c, cc2);
+         cc_memory_barrier(cc2);
+         printf("connecting to %s for %d link %s\n", b->next_hop, cc2->q->phase, cc2->q->name);
+         pn_proactor_connect2(b->proactor, cc2->q->next_hop_c, NULL, b->next_hop);
+
+         // Do link setup in PN_CONNECTION_INIT callback
+       }
+     }
+     fflush(stdout);
      break;
    }
    case PN_LINK_FLOW: {
      connection_context_t *cc = get_c_context(c);
      if (!cc->inbound_c && cc->q->credit_window == 0) {
        int cw = pn_link_credit(cc->q->outlink);
-       int nmsg = (early_flow) ? cw * 3 : cw;
+       int nmsg = cw;
        if (enable_debug) { debug("ZZZ ***   flow 1   ***   %d", cw); }
 //       fprintf(stderr, "ZZZz using cw %d nmsg %d\n", cw, nmsg);
        msg_t *msgs = calloc(sizeof(msg_t), nmsg);
@@ -783,13 +855,6 @@ static void handle(broker_t* b, pn_event_t* e, void **app_ctx, bool *wflush) {
        cc->q->free_list = msgs;
        unlock(&cc->q->qlock);
        if (enable_debug) { debug("ZZZ ***   flow 2   ***   %d %d", cw, cc->q->initial_credit); }
-     }
-     else if (!cc->inbound_c && early_flow) {
-       lock(&cc->q->qlock);
-       cc->q->early_flow_set = true;
-       cc->q->last_credit = pn_link_credit(cc->q->outlink);
-       unlock(&cc->q->qlock);
-       wake_other(cc);
      }
      break;
    }
@@ -821,6 +886,7 @@ static void handle(broker_t* b, pn_event_t* e, void **app_ctx, bool *wflush) {
        if (enable_debug) { debug("ZZZ recv    %p %p %d %d %d", cc->connection, m, (int)m->buf_capacity, (int) m->buf_size, (int) ZZZi); }
        m->in = d;
        qvrq->inbound_count++;
+       qvrq->inbound_batched++;
        if (qvrq->inbound_tail) {
          qvrq->inbound_tail->next = m;
          qvrq->inbound_tail = m;
@@ -828,7 +894,10 @@ static void handle(broker_t* b, pn_event_t* e, void **app_ctx, bool *wflush) {
          qvrq->inbound_head = qvrq->inbound_tail = m;
        }
        pn_link_advance(r);
-       if (cc->inbound_c && qvrq->early_flow_wflush) { *wflush = true; qvrq->early_flow_wflush = false; }
+       if (max_batch && qvrq->inbound_batched >= max_batch) {
+         *stop_current_batch = true;  // process context_end stuff, wake other, write latest credit and disp, come back with new batch
+         msg_stops++;
+       }
      }
      else if (pn_link_is_sender(r)) { /* Message acknowledged */
        connection_context_t *cc = get_c_context(c);
@@ -851,16 +920,26 @@ static void handle(broker_t* b, pn_event_t* e, void **app_ctx, bool *wflush) {
      cc->can_wake = false;
      unlock(&cc->wake_lock);
      check_condition(e, pn_transport_condition(pn_event_transport(e)));
-     if (cc) {
+     if (cc && !cc->closing) {
        if (cc->q) {
+         lock(&cc->q->qlock);
          check_true(cc->q->conn_count > 0, "bad connection count on close");
-         cc->closed = true;
+         unlock(&cc->q->qlock);
+         cc->closing = true;
+//         fprintf(stderr, "ZZZ transport closed and ctx closing %p\n", (void *) cc->connection);  fflush(stderr);
+         if (b->next_hop && c != cc->q->next_hop_c) {
+           // Propagate close to next hop
+           cc->q->next_hop_closing = true;
+//           fprintf(stderr, "ZZZ hop wake other  not  %p\n", (void *) cc->connection);  fflush(stderr);
+           wake_other(cc);
+         }
+         //
        }
        uint64_t now = hrtick();
        uint64_t life_ticks = now - cc->creation;
        uint64_t run_ticks = now - cc->start;
        uint64_t credit_stall = (cc->inbound_c && cc->q) ? cc->q->zero_c_ticks : 0;
-       fprintf(stderr, "transport is closed ... %d %d life %" PRIu64 " run %" PRIu64 " no cr %" PRIu64 "\n", 
+       fprintf(stderr, "transport is closed   .... %d %d life %" PRIu64 " run %" PRIu64 " no cr %" PRIu64 "\n", 
                (int) cc->cswitch, cc->inbound_c, life_ticks, run_ticks, credit_stall);
      } else {
        fprintf(stderr, "transport is closed without context\n");
@@ -870,14 +949,19 @@ static void handle(broker_t* b, pn_event_t* e, void **app_ctx, bool *wflush) {
    }
  
   case PN_CONNECTION_REMOTE_CLOSE:
-    check_condition(e, pn_connection_remote_condition(pn_event_connection(e)));
-    pn_connection_close(pn_event_connection(e));
+    fprintf(stderr, "  ZZZ con rclose %p\n", (void *) c);
+    check_condition(e, pn_connection_remote_condition(c));
+    pn_connection_close(c);
     break;
 
    case PN_SESSION_REMOTE_CLOSE:
-    check_condition(e, pn_session_remote_condition(pn_event_session(e)));
-    pn_session_close(pn_event_session(e));
-    pn_session_free(pn_event_session(e));
+    {
+      pn_session_t *s = pn_event_session(e);
+      fprintf(stderr, "  ZZZ ssn rclose %p\n", (void *) c);
+      check_condition(e, pn_session_remote_condition(s));
+      pn_session_close(s);
+      pn_session_free(s);
+    }
     break;
 
    case PN_LINK_REMOTE_CLOSE:
@@ -892,20 +976,20 @@ static void handle(broker_t* b, pn_event_t* e, void **app_ctx, bool *wflush) {
          qvrq->inlink = NULL;
        }
        */
+       fprintf(stderr, "  ZZZ lnk rclose %p\n", (void *) c);
        check_condition(e, pn_link_remote_condition(l));
        pn_link_close(l);
-       //       pn_link_free(l);  defer to qvrq_destroy()
+       if (b->next_hop) {
+         if (c == qvrq->next_hop_c) {
+           // We opened this connection and are in charge of cleanup.
+           fprintf(stderr, "  ZZZ lnk rclose tidy2 %p\n", (void *) c);
+           pn_session_close(pn_link_session(l));
+           pn_connection_close(c);
+         }
+       }
      }
     break;
 
-/*ZZZ
-   case PN_LINK_REMOTE_CLOSE:
-     {
-       pn_link_t *l = pn_event_link(e);
-       qvrq_remove_link(l);
-     }
-     break;
-*/
    case PN_LISTENER_CLOSE:
     check_condition(e, pn_listener_condition(pn_event_listener(e)));
     break;
@@ -936,7 +1020,7 @@ static void * broker_thread(void *void_broker) {
 //    fprintf(stderr,"ZZZ wait 2\n");fflush(stderr);
     pn_event_t *e;
     while ((e = pn_event_batch_next(events))) {
-      bool wflush = false;
+      bool stop_current_batch = false;
 /*
       if (e) {
         fprintf(stderr,"ZZZ e %d %s\n", bno, pn_event_type_name(pn_event_type(e))); fflush(stderr);
@@ -945,13 +1029,16 @@ static void * broker_thread(void *void_broker) {
       }
 */
       if (enable_debug) { debug("ZZZ EV    %p  %s", (void *) events, pn_event_type_name(pn_event_type(e))); }
-      handle(b, e, &app_ctx, &wflush);
-//      if (wflush) fprintf(stderr, "ZZZz early ret WFLUSH\n");
-      if (wflush) break;
+      handle(b, e, &app_ctx, &stop_current_batch);
+//      fprintf(stderr, "ZZZ EV    %p  %s\n", (void *) pn_event_connection(e), pn_event_type_name(pn_event_type(e)));
+      if (stop_current_batch) {
+        stopped_batches++;
+        break;
+      }
     }
     if (enable_debug) { debug("ZZZ EVD   %p", (void *) events); }
-    bool af_ignore = false;
-    handle(b, NULL, &app_ctx, &af_ignore);
+    bool ignore = false;
+    handle(b, NULL, &app_ctx, &ignore);
     app_ctx = NULL;
     pn_proactor_done(b->proactor, events);
   } while(!b->finished);
@@ -969,6 +1056,7 @@ int main(int argc, char **argv) {
   //  if (getenv("ZZZCW")) WINDOW=atoi(getenv("ZZZCW"));  window maintained to match peer
   /* Command line options */
   char *urlstr = "0.0.0.0:amqp";
+  char *next_hop_hostport = NULL;  // Our version of autoLink if set.
   char container_id[256];
   /* Default container-id is program:pid */
   snprintf(container_id, sizeof(container_id), "%s:%d", argv[0], getpid());
@@ -981,6 +1069,7 @@ int main(int argc, char **argv) {
         char opt = argv[i++][1];
         switch (opt) {
         case 'a': if (i < argc) urlstr = argv[i++]; else usage(argv[0]); break;
+        case 'r': if (i < argc) next_hop_hostport = argv[i++]; else usage(argv[0]); break;
         case 't': if (i < argc) nthreads = atoi(argv[i++]); else usage(argv[0]); break;
         case 'd': enable_debug = true; break;
         case 'A': sasl_anon = true; break;
@@ -996,9 +1085,10 @@ int main(int argc, char **argv) {
   if (i < argc)
     usage(argv[0]);
 
-  if (getenv("ZZZ_EF")) early_flow = true;
+  if (getenv("QVRB_MB")) max_batch = atoi(getenv("QVRB_MB"));
+
   broker_t b;
-  broker_init(&b, container_id, nthreads, heartbeat, n_conns);
+  broker_init(&b, container_id, nthreads, heartbeat, n_conns, next_hop_hostport);
 
   /* Parse the URL or use default values */
 //  pn_url_t *url = urlstr ? pn_url_parse(urlstr) : NULL;
@@ -1022,7 +1112,7 @@ int main(int argc, char **argv) {
   for (size_t i = 0; i < b.threads-1; ++i) {
     check(pneg_thread_create(&threads[i], broker_thread, &b), "pthread_create");
   }
-  fprintf(stderr, "ZZZ early flow is %d\n", early_flow);
+  fprintf(stderr, "ZZZ early flow is %d, unimpl\n", 0);
   fprintf(stderr,"ZZZ bt1\n");fflush(stderr);
   if (fg_stacks) {
     while(!b.finished) sleep(1);
