@@ -606,6 +606,7 @@ long pd_inactives = 0;
 
 
 static int pd_conn_count = 0;
+static bool perf_debug_yesdelay = false;
 
 struct perf_debug_t {
   FILE *fp;
@@ -1671,6 +1672,7 @@ static void configure_socket(int sock) {
   flags |= O_NONBLOCK;
   (void)fcntl(sock, F_SETFL, flags); // TODO: check for error
 
+  if (perf_debug_yesdelay) return;
   int tcp_nodelay = 1;
   (void)setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, (void*) &tcp_nodelay, sizeof(tcp_nodelay));
 }
@@ -2250,6 +2252,8 @@ static void epoll_secondary_init(epoll_extended_t *ee, int epoll_fd_2, int epoll
 }
 
 pn_proactor_t *pn_proactor() {
+  if (getenv("PN_EPOLL_YESDELAY"))
+    perf_debug_yesdelay = true;
   pn_proactor_t *p = (pn_proactor_t*)calloc(1, sizeof(*p));
   if (!p) return NULL;
   p->epollfd = p->eventfd = p->timer.timerfd = -1;
