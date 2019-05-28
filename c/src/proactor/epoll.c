@@ -551,6 +551,7 @@ typedef struct pconnection_t {
   bool read_blocked;
   bool write_blocked;
   bool disconnected;
+  bool early_done; // done() without event draining: user wants output flushed and most recent credit calculated.
   int hog_count; // thread hogging limiter
   pn_event_batch_t batch;
   pn_connection_driver_t driver;
@@ -954,6 +955,7 @@ static pn_event_t *pconnection_batch_next(pn_event_batch_t *batch) {
       }
     }
   }
+  pc->early_done = !!e;
   return e;
 }
 
@@ -1031,6 +1033,8 @@ static inline bool pconnection_work_pending(pconnection_t *pc) {
 
 static void pconnection_done(pconnection_t *pc) {
   bool notify = false;
+  if (pc->early_done)
+    write_flush(pc);
   lock(&pc->context.mutex);
   pc->context.working = false;  // So we can wake() ourself if necessary.  We remain the de facto
                                 // working context while the lock is held.
@@ -1101,6 +1105,7 @@ static pn_event_batch_t *pconnection_process(pconnection_t *pc, uint32_t events,
   bool timer_fired = false;
   bool waking = false;
   bool tick_required = false;
+  bool force_read = false;
 
   // Don't touch data exclusive to working thread (yet).
 
@@ -1141,6 +1146,9 @@ static pn_event_batch_t *pconnection_process(pconnection_t *pc, uint32_t events,
       return NULL;
     }
     pc->context.working = true;
+    if (pc->early_done)
+      force_read = true;
+    pc->early_done = false;
   }
 
   // Confirmed as working thread.  Review state and unlock ASAP.
@@ -1157,8 +1165,9 @@ static pn_event_batch_t *pconnection_process(pconnection_t *pc, uint32_t events,
     }
   }
 
-  if (pconnection_has_event(pc)) {
+  if (!force_read && pconnection_has_event(pc)) {
     unlock(&pc->context.mutex);
+    pc->early_done = true;
     return &pc->batch;
   }
   bool closed = pconnection_rclosed(pc) && pconnection_wclosed(pc);
@@ -1235,6 +1244,7 @@ static pn_event_batch_t *pconnection_process(pconnection_t *pc, uint32_t events,
       }
     }
   }
+  force_read = false;
 
   if (tick_required) {
     pconnection_tick(pc);         /* check for tick changes. */
@@ -1247,6 +1257,7 @@ static pn_event_batch_t *pconnection_process(pconnection_t *pc, uint32_t events,
   }
 
   if (pconnection_has_event(pc)) {
+    pc->early_done = true;
     return &pc->batch;
   }
 
