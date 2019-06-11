@@ -19,6 +19,44 @@
  *
  */
 
+/*
+ WIP: new epoll proactor.
+ Old: each thread without work called epoll_wait for 1 event.
+ New: when known work exhausted, only one thread calls epoll_wait for N events.
+
+ Also new: the "poller" thread looks through a small portion of a new snapshot of work and
+ looks for warm threads that could be re-assigned to previous context work.  If a thread
+ looking for work has not been assigned a context, it looks for the next available one and
+ self-assigns to it.  With no work available, a thread either becomes the poller or
+ suspends on a condition var.
+
+ The above is protected by a single scheduler mutex per proactor.  Possibly hotly
+ contested and worth measuring.
+
+ A serialized grouping of Proton events is a context (connection, listener, proactor).
+ Each has multiple pollable fds that make it schedulable.  E.g. a connection could have a
+ socket fd, timerfd, and (indirect) eventfd all signaled in a single epoll_wait().
+
+ At the conclusion of each 
+      N = epoll_wait(..., N_MAX, timeout)
+
+ there will be N epoll events and M wakes on the wake list.  M can be very large in a
+ dispatch router with many active connections. The poller makes the contexts "runnable" if
+ they are not already running.  N+M-duplicates contexts will be scheduled and the next
+ epoll_wait will be after a thread finds no more work to do.
+
+ A running context, before it stops "working" must check to see if there were new incoming
+ events that the poller posted to the context, but could not make it runnable since it was
+ already running.  The context will know if it needs to put itself back on the wake list
+ to be runnable later to process the pending events.
+
+ 
+ lock ordering: context/sched/wake  never add locks right to left.
+
+ "ZZZ" in the code indicates impermanent cruft: debug code or vars or reminders to fix.
+ */
+
+
 /* Enable POSIX features beyond c99 for modern pthread and standard strerror_r() */
 #ifndef _POSIX_C_SOURCE
 #define _POSIX_C_SOURCE 200809L
@@ -28,6 +66,7 @@
 
 #include "../core/log_private.h"
 #include "./proactor-internal.h"
+#include "../core/util.h"
 
 #include <proton/condition.h>
 #include <proton/connection_driver.h>
@@ -56,6 +95,8 @@
 #include <time.h>
 
 #include "./netaddr-internal.h" /* Include after socket/inet headers */
+
+static bool dbgz = false;
 
 // TODO: replace timerfd per connection with global lightweight timer mechanism.
 // logging in general
@@ -113,14 +154,13 @@ static inline void lock(pmutex *m) { pthread_mutex_lock(m); }
 static inline void unlock(pmutex *m) { pthread_mutex_unlock(m); }
 
 typedef struct acceptor_t acceptor_t;
+typedef struct tslot_t tslot_t;
 
 typedef enum {
   WAKE,   /* see if any work to do in proactor/psocket context */
   PCONNECTION_IO,
-  PCONNECTION_IO_2,
   PCONNECTION_TIMER,
   LISTENER_IO,
-  CHAINED_EPOLL,
   PROACTOR_TIMER } epoll_type_t;
 
 // Data to use with epoll.
@@ -269,6 +309,7 @@ pn_timestamp_t pn_i_now2(void)
   return ((pn_timestamp_t)now.tv_sec) * 1000 + (now.tv_nsec / 1000000);
 }
 
+
 // ========================================================================
 // Proactor common code
 // ========================================================================
@@ -338,6 +379,9 @@ static void stop_polling(epoll_extended_t *ee, int epollfd) {
  */
 
 /*
+ * ZZZ redocument.  epollfd_2 gone with single poller thread...
+
+
  * **** epollfd and epollfd_2 ****
  *
  * This implementation allows multiple threads to call epoll_wait()
@@ -381,7 +425,47 @@ typedef struct pcontext_t {
   struct pcontext_t* prev;  /* Protected by proactor.mutex */
   int disconnect_ops;           /* ops remaining before disconnect complete */
   bool disconnecting;           /* pn_proactor_disconnect */
+  // ZZZ allign me
+  // Schedule mutex
+  bool runnable;                /* in need of scheduling */
+  tslot_t *runner;              /* designated or running thread */
+  tslot_t *prev_runner;
+  bool sched_wake;
 } pcontext_t;
+
+typedef enum {
+  NEW,
+  UNUSED,
+  SUSPENDED,
+  PROCESSING,
+  BATCHING,
+  DELETING,
+  POLLING } tslot_state;
+
+struct tslot_t {
+  pmutex mutex;
+  pthread_cond_t cond;
+  pthread_t tid;
+  bool suspended;
+  bool scheduled;
+  tslot_state state;
+  pcontext_t *context;
+  pcontext_t *prev_context;
+  bool earmarked;
+  tslot_t *suspend_list_prev;
+  tslot_t *suspend_list_next;
+  tslot_t *res_list_prev;
+  tslot_t *res_list_next;
+  int zz_susp1, zz_susp2, zz_rsm1, zz_rsm2, ZZ_a;
+  int foolocks;
+  int zz_dones;
+  int zz_polls, zz_ipolls;
+};
+
+typedef struct tslotmap_t {
+  pthread_t id;
+  tslot_t *tslot;
+} tslotmap_t;
 
 static void pcontext_init(pcontext_t *ctx, pcontext_type_t t, pn_proactor_t *p, void *o) {
   memset(ctx, 0, sizeof(*ctx));
@@ -395,6 +479,7 @@ static void pcontext_finalize(pcontext_t* ctx) {
   pmutex_finalize(&ctx->mutex);
 }
 
+
 /* common to connection and listener */
 typedef struct psocket_t {
   pn_proactor_t *proactor;
@@ -404,18 +489,20 @@ typedef struct psocket_t {
   pn_listener_t *listener;      /* NULL for a connection socket */
   char addr_buf[PN_MAX_ADDR];
   const char *host, *port;
+  uint32_t sched_io_events;
+  uint32_t working_io_events;
 } psocket_t;
+
+#define TSMAX 16
 
 struct pn_proactor_t {
   pcontext_t context;
   int epollfd;
-  int epollfd_2;
   ptimer_t timer;
   pn_collector_t *collector;
   pcontext_t *contexts;         /* in-use contexts for PN_PROACTOR_INACTIVE and cleanup */
   epoll_extended_t epoll_wake;
   epoll_extended_t epoll_interrupt;
-  epoll_extended_t epoll_secondary;
   pn_event_batch_t batch;
   size_t disconnects_pending;   /* unfinished proactor disconnects*/
   // need_xxx flags indicate we should generate PN_PROACTOR_XXX on the next update_batch()
@@ -437,30 +524,238 @@ struct pn_proactor_t {
   // If the process runs out of file descriptors, disarm listening sockets temporarily and save them here.
   acceptor_t *overflow;
   pmutex overflow_mutex;
+  // Warm runnables have assigned suspended tslots and can run right away.
+  // Other runnables are run as tslots come available.
+  // Contexts on the wake queue up to p->last_wake_context are also scheduled prior to a next epoll_wait().
+  pmutex sched_mutex;
+  bool sched_timeout;
+  bool sched_interrupt;
+  pcontext_t *runnables[TSMAX];
+  int n_runnables;
+  int next_runnable;
+
+
+  tslot_t *suspend_list_head;
+  tslot_t *suspend_list_tail;
+  int suspend_list_count;
+  tslot_t *poller;
+  bool poller_suspended;
+  // Scratch vars for poller
+  tslot_t *resume_list[TSMAX];
+  struct epoll_event *kevents; // ZZZ alloca?
+  int kevents_length;
+  pcontext_t *warm_runnables[TSMAX];
+  int n_warm_runnables;
+
+
+  tslotmap_t tmaps[TSMAX];
+  tslot_t tslots[TSMAX];
+  int thread_count;
+  // ZZZ order vars according to access pattern
+  pcontext_t *sched_wake_first;
+  pcontext_t *sched_wake_last;
+  pcontext_t *sched_wake_current;
+  pmutex tslot_mutex;
+  int earmark_count;
+  bool earmark_drain;
+  bool sched_wakes_pending;
+  int zz_polls, zz_t0polls;
 };
+
+static int ZZZspins = 0;
+
+static int ZZZts(pn_proactor_t *p, tslot_t *ts) {
+  if (!ts) return -1;
+  return ts - p->tslots;
+}
+
+static void ZZZwk(pn_proactor_t *p) {
+  char buf[100];
+  char mb[30];
+  pcontext_t *ctx = p->wake_list_first;
+  buf[0] = '\0';
+  while(ctx) {
+    sprintf(mb, "  %p", (void *) ctx);
+    ctx = ctx->wake_next;
+    strcat(buf, mb);
+  }
+  fprintf(stderr, ".   %p %p %p %p %p\n  .  %s\n", (void *) p->wake_list_first, (void *) p->wake_list_last, (void *) p->sched_wake_first, (void *) p->sched_wake_last, (void *) p->sched_wake_current, buf);
+
+}
+
+//ZZZ doc somewhere...
+// process() is slow, post() is fast and indicates runnable
+// degrees of warmth are: paired, suspended list lifo order, none
+
+
+// The wake list can keep growing while popping wakes.  The list bewen
+// sched_wake_first and sched_wake_last are protected by the sched
+// lock (for pop operations), sched_wake_last to wake_list_last are
+// protected by the eventfd mutex (for add operations).  Both locks
+// are needed to cross or reconcile the two portions of the list.
+// Call with sched lock held.
+static void pop_wake(pcontext_t *ctx) {
+  if (dbgz) ZZZwk(ctx->proactor);
+  assert(ctx->sched_wake);
+  ctx->sched_wake = false;
+  pn_proactor_t *p = ctx->proactor;
+  pcontext_t *prev = NULL;
+  for (pcontext_t *i = p->sched_wake_first; i != ctx; i = i->wake_next)
+    prev = i;
+
+  // value of wake_list_last->wake_next is unknown without wake_lock
+  // ctx can be popped without eventfd_mutex if it is before wake_list_last
+  if (ctx != p->sched_wake_last) {
+    if (prev)
+      prev->wake_next = ctx->wake_next;
+    else {
+      lock(&p->eventfd_mutex);
+      p->wake_list_first = p->sched_wake_first = ctx->wake_next;
+      unlock(&p->eventfd_mutex);
+    }
+    if (ctx == p->sched_wake_current)
+      p->sched_wake_current = ctx->wake_next;
+    ctx->wake_next = NULL;
+  }
+  else {
+    lock(&p->eventfd_mutex);
+    p->sched_wake_current = NULL;
+    if (p->sched_wake_first == p->sched_wake_last) {
+      // All sched_wakes popped.
+      p->wake_list_first = p->sched_wake_first = p->sched_wake_last->wake_next;
+      p->sched_wake_last = p->sched_wake_first;
+      if (p->wake_list_first == NULL) {
+        p->wake_list_last = NULL;
+        p->wakes_in_progress = false;
+      }
+      if (dbgz) fprintf(stderr, "  pop_wake1 %p %d\n", (void *) ctx, p->wakes_in_progress);
+      if (p->wakes_in_progress) {
+        // Remember for later that the wake fd is not armed while holding both locks.
+        p->sched_wakes_pending = true;
+      }
+    }
+    else {
+      // prev is now last
+      assert(prev != NULL);
+      prev->wake_next = ctx->wake_next;
+      p->sched_wake_last = prev;
+      if (p->wake_list_last == ctx)
+        p->wake_list_last = prev;
+      if (dbgz) fprintf(stderr, "  pop_wake2 %p %d\n", (void *) ctx, p->wakes_in_progress);
+    }
+    ctx->wake_next = NULL;
+    unlock(&p->eventfd_mutex);
+  }
+  if (dbgz) fprintf(stderr, "  pop_wake3 %p %d\n", (void *) ctx, p->wakes_in_progress);
+  assert(ctx->wake_next == NULL);
+}
+
+
+static bool ZZZdbgy = false;
+
+static void suspend_list_add_tail(pn_proactor_t *p, tslot_t *ts) {
+  LL_ADD(p, suspend_list, ts);
+}
+
+static void suspend_list_insert_head(pn_proactor_t *p, tslot_t *ts) {
+  ts->suspend_list_next = p->suspend_list_head;
+  ts->suspend_list_prev = NULL;
+  if (p->suspend_list_head)
+    p->suspend_list_head->suspend_list_prev = ts;
+  else
+    p->suspend_list_tail = ts;
+  p->suspend_list_head = ts;
+}
+
+
+
+// Call with sched lock
+static void suspend(pn_proactor_t *p, tslot_t *ts) {
+  if (ts->state == NEW)
+    suspend_list_add_tail(p, ts);
+  else
+    suspend_list_insert_head(p, ts);
+  p->suspend_list_count++;
+  // Medium length spinning tried here.  Raises cpu dramatically,
+  // unclear throughput or latency benefit (not seen where most
+  // expected, modest at other times).
+  ts->state = SUSPENDED;
+  ts->scheduled = false;
+  unlock(&p->sched_mutex);
+  if (ZZZdbgy) ts->zz_susp1++;
+  lock(&ts->mutex);
+
+  if (ZZZspins && !ts->scheduled) {
+    unlock(&ts->mutex);
+    for (int i = 0; i < ZZZspins; i++) {
+      if (ts->scheduled) break;
+
+      __asm volatile ("pause" ::: "memory");
+      if ((i % 1000) == 0) {
+        lock(&ts->mutex);
+        ts->foolocks++;
+        unlock(&ts->mutex);
+      }
+    }
+    lock(&ts->mutex);
+    if (ts->scheduled) {
+      unlock(&ts->mutex);
+      lock(&p->sched_mutex);
+      ts->state = PROCESSING;
+      return;
+    }
+  }
+
+  while (!ts->scheduled) {
+    ts->suspended = true;
+    int result = pthread_cond_wait(&ts->cond, &ts->mutex);
+    if (result != 0 && dbgz) fprintf(stderr, "assert1 ZZZ\n");
+    if (ZZZdbgy) ts->zz_susp2++;
+    assert(result == 0);
+  }
+  ts->suspended = false;
+  unlock(&ts->mutex);
+  lock(&p->sched_mutex);
+  ts->state = PROCESSING;
+}
+
+// Call with no lock
+static void resume(pn_proactor_t *p, tslot_t *ts) {
+  lock(&ts->mutex);
+  if (ZZZdbgy) ts->zz_rsm1++;
+  ts->scheduled = true;
+  if (ts->suspended) {
+    int result = pthread_cond_signal(&ts->cond);
+    if (result != 0 && dbgz) fprintf(stderr, "assert1 ZZZ\n");
+    assert(result == 0);
+    if (ZZZdbgy) ts->zz_rsm2++;
+  }
+  unlock(&ts->mutex);
+
+  // assert(not_on_suspend_list)
+}
 
 static void rearm(pn_proactor_t *p, epoll_extended_t *ee);
 
 /*
  * Wake strategy with eventfd.
  *  - wakees can be in the list only once
- *  - wakers only write() if wakes_in_progress is false
- *  - wakees only read() if about to set wakes_in_progress to false
- * When multiple wakes are pending, the kernel cost is a single rearm().
- * Otherwise it is the trio of write/read/rearm.
- * Only the writes and reads need to be carefully ordered.
- *
- * Multiple eventfds could be used and shared amongst the pcontext_t's.
+ *  - wakers only use the eventfd if wakes_in_progress is false
+ * There is a single rearm between wakes > 0 and wakes == 0
  */
 
 // part1: call with ctx->owner lock held, return true if notify required by caller
 static bool wake(pcontext_t *ctx) {
   bool notify = false;
+  if (dbgz) fprintf(stderr, "W  %p     %d %d\n", (void *) ctx, ctx->wake_ops, ctx->working);
+  pn_proactor_t *p = ctx->proactor; //ZZZ for debug statements
+
   if (!ctx->wake_ops) {
     if (!ctx->working) {
       ctx->wake_ops++;
       pn_proactor_t *p = ctx->proactor;
       lock(&p->eventfd_mutex);
+      ctx->wake_next = NULL;
       if (!p->wake_list_first) {
         p->wake_list_first = p->wake_list_last = ctx;
       } else {
@@ -475,47 +770,26 @@ static bool wake(pcontext_t *ctx) {
       unlock(&p->eventfd_mutex);
     }
   }
+  if (dbgz) fprintf(stderr, "   %d    %p %p       %p %p %p\n", p->wakes_in_progress, (void *) p->wake_list_first, (void *) p->wake_list_last, (void *) p->sched_wake_first, (void *) p->sched_wake_last, (void *) p->sched_wake_current);
+  if (dbgz && p->wake_list_first) fprintf(stderr, "     %p more \n", (void *) p->wake_list_first->wake_next);
+  if (dbgz) ZZZwk(ctx->proactor);
   return notify;
 }
 
 // part2: make OS call without lock held
 static inline void wake_notify(pcontext_t *ctx) {
-  if (ctx->proactor->eventfd == -1)
+  if (dbgz) fprintf(stderr, "WN  %p\n", (void *) ctx);
+  pn_proactor_t *p = ctx->proactor;
+  if (p->eventfd == -1)
     return;
-  uint64_t increment = 1;
-  if (write(ctx->proactor->eventfd, &increment, sizeof(uint64_t)) != sizeof(uint64_t))
-    EPOLL_FATAL("setting eventfd", errno);
-}
-
-// call with no locks
-static pcontext_t *wake_pop_front(pn_proactor_t *p) {
-  pcontext_t *ctx = NULL;
-  lock(&p->eventfd_mutex);
-  assert(p->wakes_in_progress);
-  if (p->wake_list_first) {
-    ctx = p->wake_list_first;
-    p->wake_list_first = ctx->wake_next;
-    if (!p->wake_list_first) p->wake_list_last = NULL;
-    ctx->wake_next = NULL;
-
-    if (!p->wake_list_first) {
-      /* Reset the eventfd until a future write.
-       * Can the read system call be made without holding the lock?
-       * Note that if the reads/writes happen out of order, the wake
-       * mechanism will hang. */
-      (void)read_uint64(p->eventfd);
-      p->wakes_in_progress = false;
-    }
-  }
-  unlock(&p->eventfd_mutex);
   rearm(p, &p->epoll_wake);
-  return ctx;
 }
 
 // call with owner lock held, once for each pop from the wake list
 static inline void wake_done(pcontext_t *ctx) {
   assert(ctx->wake_ops > 0);
   ctx->wake_ops--;
+  if (dbgz) fprintf(stderr, "  WD  %p   %d %d\n", (void *) ctx, ctx->wake_ops, ctx->working);
 }
 
 
@@ -536,7 +810,6 @@ typedef struct pconnection_t {
   psocket_t psocket;
   pcontext_t context;
   uint32_t new_events;
-  uint32_t new_events_2;
   int wake_count;
   bool server;                /* accept, not connect */
   bool tick_pending;
@@ -546,7 +819,6 @@ typedef struct pconnection_t {
   ptimer_t timer;  // TODO: review one timerfd per connection
   // Following values only changed by (sole) working context:
   uint32_t current_arm;  // active epoll io events
-  uint32_t current_arm_2;  // secondary active epoll io events
   bool connected;
   bool read_blocked;
   bool write_blocked;
@@ -554,12 +826,18 @@ typedef struct pconnection_t {
   int hog_count; // thread hogging limiter
   pn_event_batch_t batch;
   pn_connection_driver_t driver;
+  bool wbuf_valid;
+  const char *wbuf_current;
+  size_t wbuf_remaining;
+  size_t wbuf_completed;
   struct pn_netaddr_t local, remote; /* Actual addresses */
   struct addrinfo *addrinfo;         /* Resolved address list */
   struct addrinfo *ai;               /* Current connect address */
   pmutex rearm_mutex;                /* protects pconnection_rearm from out of order arming*/
-  epoll_extended_t epoll_io_2;
-  epoll_extended_t *rearm_target;    /* main or secondary epollfd */
+  bool io_doublecheck;               /* callbacks made and new IO may have arrived */
+  // ZZZ allignme
+  bool sched_timeout;
+  int zzwarm, zzearmk, zzsysw, zzsnd, zzsysr, zzrcv, zzbaddrn, zzrandom_win, zzfallbk, zzlatewk, zzdones;
 } pconnection_t;
 
 /* Protects read/update of pn_connnection_t pointer to it's pconnection_t
@@ -586,6 +864,80 @@ static void set_pconnection(pn_connection_t* c, pconnection_t *pc) {
   *pn_connection_driver_ptr(c) = pc ? &pc->driver : NULL;
   unlock(&driver_ptr_mutex);
 }
+
+
+static pconnection_t *dbgy(pcontext_t * ctx) {
+  if (ZZZdbgy && ctx->type == PCONNECTION)
+    return (pconnection_t *) ctx->owner;
+  return NULL;
+}
+
+// Call with sched_mutex locked
+static void assign_thread(tslot_t *ts, pcontext_t *ctx) {
+  assert(!ctx->runner);
+  ctx->runner = ts;
+  ctx->prev_runner = NULL;
+  ctx->runnable = false;
+  ts->context = ctx;
+  ts->prev_context = NULL;
+  if (ZZZdbgy) ts->ZZ_a++;
+}
+
+// Call with sched_mutex locked
+static void unassign_thread_lh(tslot_t *ts, tslot_state new_state) {
+  pcontext_t *ctx = ts->context;
+  ctx->runner = NULL;
+  ctx->prev_runner = ts;
+  if (ts->state != DELETING)
+    ts->prev_context = ts->context;
+  ts->context = NULL;
+  ts->state = new_state;
+}
+
+#ifdef once_upon_etc
+// ZZZ 
+// Call with no locks
+static void unassign_thread(pn_proactor_t *p, tslot_t *ts, tslot_state new_state) {
+  lock(&p->sched_mutex);
+  unassign_thread_lh(ts, new_state);
+  unlock(&p->sched_mutex);
+}
+#endif
+
+// Call with sched_mutex locked
+static void earmark_thread(tslot_t *ts, pcontext_t *ctx) {
+  assign_thread(ts, ctx);
+  ts->earmarked = true;
+  ctx->proactor->earmark_count++;
+  if (dbgz) fprintf(stderr, "earmark t%d %p %d\n", ZZZts(ctx->proactor, ts), (void *) ctx, ctx->proactor->earmark_count);
+}
+
+// Call with sched_mutex locked
+static void make_runnable(pcontext_t *ctx) {
+  pn_proactor_t *p = ctx->proactor;
+  assert(p->n_runnables <= TSMAX);
+  assert(!ctx->runnable);
+  if (ctx->runner) return;
+  
+  ctx->runnable = true;
+  // Track it as normal or warm or earmarked
+  tslot_t *ts = ctx->prev_runner;
+  if (ts && ts->prev_context == ctx) {
+    if (ts->state == SUSPENDED || ts->state == PROCESSING) {
+      p->warm_runnables[p->n_warm_runnables++] = ctx;
+      assign_thread(ts, ctx);
+      pconnection_t *pc = dbgy(ctx); if (pc) pc->zzwarm++;
+      return;
+    }
+    if (ts->state == UNUSED && !p->earmark_drain) {
+      earmark_thread(ts, ctx);
+      pconnection_t *pc = dbgy(ctx); if (pc) pc->zzearmk++;
+      return;
+    }
+  }
+  p->runnables[p->n_runnables++] = ctx;
+}
+
 
 /*
  * A listener can have mutiple sockets (as specified in the addrinfo).  They
@@ -621,9 +973,10 @@ struct pn_listener_t {
   size_t backlog;
   bool close_dispatched;
   pmutex rearm_mutex;             /* orders rearms/disarms, nothing else */
+  uint32_t sched_io_events;
 };
 
-static pn_event_batch_t *pconnection_process(pconnection_t *pc, uint32_t events, bool timeout, bool topup, bool is_io_2);
+static pn_event_batch_t *pconnection_process(pconnection_t *pc, uint32_t events, bool timeout, bool wake, bool topup);
 static void write_flush(pconnection_t *pc);
 static void listener_begin_close(pn_listener_t* l);
 static void proactor_add(pcontext_t *ctx);
@@ -721,24 +1074,6 @@ static void rearm(pn_proactor_t *p, epoll_extended_t *ee) {
     EPOLL_FATAL("arming polled file descriptor", errno);
 }
 
-// Only used by pconnection_t if two separate epoll interests in play
-static void rearm_2(pn_proactor_t *p, epoll_extended_t *ee) {
-  // Delay registration until first use.  It's not OK to register or arm
-  // with an event mask of 0 (documented below).  It is OK to leave a
-  // disabled event registered until the next EPOLLONESHOT.
-  if (!ee->polling) {
-    ee->fd = ee->psocket->sockfd;
-    start_polling(ee, p->epollfd_2);
-  } else {
-    struct epoll_event ev = {0};
-    ev.data.ptr = ee;
-    ev.events = ee->wanted | EPOLLONESHOT;
-    memory_barrier(ee);
-    if (epoll_ctl(p->epollfd_2, EPOLL_CTL_MOD, ee->fd, &ev) == -1)
-      EPOLL_FATAL("arming polled file descriptor (secondary)", errno);
-  }
-}
-
 static void listener_list_append(acceptor_t **start, acceptor_t *item) {
   assert(item->next == NULL);
   if (*start) {
@@ -818,6 +1153,7 @@ static const char *pconnection_setup(pconnection_t *pc, pn_proactor_t *p, pn_con
 {
   memset(pc, 0, sizeof(*pc));
 
+  if (dbgz) fprintf(stderr, "new pc %p\n", (void *) &pc->context);
   if (pn_connection_driver_init(&pc->driver, c, t) != 0) {
     free(pc);
     return "pn_connection_driver_init failure";
@@ -826,7 +1162,6 @@ static const char *pconnection_setup(pconnection_t *pc, pn_proactor_t *p, pn_con
   pcontext_init(&pc->context, PCONNECTION, p, pc);
   psocket_init(&pc->psocket, p, NULL, addr);
   pc->new_events = 0;
-  pc->new_events_2 = 0;
   pc->wake_count = 0;
   pc->tick_pending = false;
   pc->timer_armed = false;
@@ -834,11 +1169,14 @@ static const char *pconnection_setup(pconnection_t *pc, pn_proactor_t *p, pn_con
   pc->disconnect_condition = NULL;
 
   pc->current_arm = 0;
-  pc->current_arm_2 = 0;
   pc->connected = false;
   pc->read_blocked = true;
   pc->write_blocked = true;
   pc->disconnected = false;
+  pc->wbuf_valid = false;
+  pc->wbuf_completed = 0;
+  pc->wbuf_remaining = 0;
+  pc->wbuf_current = NULL;
   pc->hog_count = 0;
   pc->batch.next_event = pconnection_batch_next;
 
@@ -852,13 +1190,6 @@ static const char *pconnection_setup(pconnection_t *pc, pn_proactor_t *p, pn_con
   }
   pmutex_init(&pc->rearm_mutex);
 
-  epoll_extended_t *ee = &pc->epoll_io_2;
-  ee->psocket = &pc->psocket;
-  ee->fd = -1;
-  ee->type = PCONNECTION_IO_2;
-  ee->wanted = 0;
-  ee->polling = false;
-
   /* Set the pconnection_t backpointer last.
      Connections that were released by pn_proactor_release_connection() must not reveal themselves
      to be re-associated with a proactor till setup is complete.
@@ -871,7 +1202,7 @@ static const char *pconnection_setup(pconnection_t *pc, pn_proactor_t *p, pn_con
 // Call with lock held and closing == true (i.e. pn_connection_driver_finished() == true), timer cancelled.
 // Return true when all possible outstanding epoll events associated with this pconnection have been processed.
 static inline bool pconnection_is_final(pconnection_t *pc) {
-  return !pc->current_arm && !pc->current_arm_2 && !pc->timer_armed && !pc->context.wake_ops;
+  return !pc->current_arm && !pc->timer_armed && !pc->context.wake_ops;
 }
 
 static void pconnection_final_free(pconnection_t *pc) {
@@ -891,6 +1222,7 @@ static void pconnection_final_free(pconnection_t *pc) {
   free(pc);
 }
 
+
 // call without lock, but only if pconnection_is_final() is true
 static void pconnection_cleanup(pconnection_t *pc) {
   stop_polling(&pc->psocket.epoll_io, pc->psocket.proactor->epollfd);
@@ -898,6 +1230,18 @@ static void pconnection_cleanup(pconnection_t *pc) {
     pclosefd(pc->psocket.proactor, pc->psocket.sockfd);
   stop_polling(&pc->timer.epoll_io, pc->psocket.proactor->epollfd);
   ptimer_finalize(&pc->timer);
+  if (dbgy(&pc->context)) {
+    fprintf(stdout, "%d  |  %d %d %d %d  |  w %d e %d r %d f %d lw %d  | %d\n", pc->zzdones, pc->zzsysr, pc->zzrcv, pc->zzsysw, pc->zzsnd,        pc->zzwarm, pc->zzearmk, pc->zzrandom_win, pc->zzfallbk, pc->zzlatewk, pc->zzbaddrn);
+
+    pn_proactor_t *p = pc->context.proactor;
+    fprintf(stdout, "p  %d %d\n", p->zz_polls, p->zz_t0polls);
+    int count = p->thread_count;
+    for (int i = 0; i < count; i++ ) {
+      tslot_t *ts2 = &p->tslots[i];
+      fprintf(stdout, "  t%d  %d %d    %d %d    %d  N %d P %d %d\n", i, ts2->zz_susp1, ts2->zz_susp2, ts2->zz_rsm1, ts2->zz_rsm2, ts2->foolocks, ts2->zz_dones, ts2->zz_polls, ts2->zz_ipolls);
+    }
+    fflush(stdout);
+  }
   lock(&pc->context.mutex);
   bool can_free = proactor_remove(&pc->context);
   unlock(&pc->context.mutex);
@@ -906,11 +1250,33 @@ static void pconnection_cleanup(pconnection_t *pc) {
   // else proactor_disconnect logic owns psocket and its final free
 }
 
+static void invalidate_wbuf(pconnection_t *pc) {
+  if (pc->wbuf_valid) {
+    if (pc->wbuf_completed)
+      pn_connection_driver_write_done(&pc->driver, pc->wbuf_completed);
+    pc->wbuf_completed = 0;
+    pc->wbuf_remaining = 0;
+    pc->wbuf_valid = false;
+  }
+}
+
+// Never call with any locks held.
+static void ensure_wbuf(pconnection_t *pc) {
+  if (!pc->wbuf_valid) {
+    // next connection_driver call is the expensive output generator
+    pn_bytes_t wbuf = pn_connection_driver_write_buffer(&pc->driver);
+    pc->wbuf_completed = 0;
+    pc->wbuf_remaining = wbuf.size;
+    pc->wbuf_current = wbuf.start;
+    pc->wbuf_valid = true;
+  }
+}
+
 // Call with lock held or from forced_shutdown
 static void pconnection_begin_close(pconnection_t *pc) {
   if (!pc->context.closing) {
     pc->context.closing = true;
-    if (pc->current_arm || pc->current_arm_2) {
+    if (pc->current_arm) {
       // Force EPOLLHUP callback(s)
       shutdown(pc->psocket.sockfd, SHUT_RDWR);
     }
@@ -930,8 +1296,6 @@ static void pconnection_forced_shutdown(pconnection_t *pc) {
   // Called by proactor_free, no competing threads, no epoll activity.
   pc->current_arm = 0;
   pc->new_events = 0;
-  pc->current_arm_2 = 0;
-  pc->new_events_2 = 0;
   pconnection_begin_close(pc);
   // pconnection_process will never be called again.  Zero everything.
   pc->timer_armed = false;
@@ -946,14 +1310,26 @@ static pn_event_t *pconnection_batch_next(pn_event_batch_t *batch) {
   if (!pc->driver.connection) return NULL;
   pn_event_t *e = pn_connection_driver_next_event(&pc->driver);
   if (!e) {
-    write_flush(pc);  // May generate transport event
-    e = pn_connection_driver_next_event(&pc->driver);
-    if (!e && pc->hog_count < HOG_MAX) {
-      if (pconnection_process(pc, 0, false, true, false)) {
+    pn_proactor_t *p = pc->context.proactor;
+    bool idle_threads;
+    lock(&p->sched_mutex);
+    idle_threads = (p->suspend_list_head != NULL);
+    unlock(&p->sched_mutex);
+    if (idle_threads) {
+      pc->read_blocked = pc->write_blocked = false;
+      pconnection_process(pc, 0, false, false, true);
+      e = pn_connection_driver_next_event(&pc->driver);
+    }
+    else {
+      write_flush(pc);  // May generate transport event
+      e = pn_connection_driver_next_event(&pc->driver);
+      if (!e && pc->hog_count < HOG_MAX) {
+        pconnection_process(pc, 0, false, false, true);
         e = pn_connection_driver_next_event(&pc->driver);
       }
     }
   }
+  if (e) invalidate_wbuf(pc);
   return e;
 }
 
@@ -976,7 +1352,7 @@ static inline bool pconnection_wclosed(pconnection_t  *pc) {
    close/shutdown.  Let read()/write() return 0 or -1 to trigger cleanup logic.
 */
 static bool pconnection_rearm_check(pconnection_t *pc) {
-  if (pc->current_arm && pc->current_arm_2) return false;  // Maxed out
+  assert(pc->wbuf_valid);
   if (pconnection_rclosed(pc) && pconnection_wclosed(pc)) {
     return false;
   }
@@ -985,67 +1361,99 @@ static bool pconnection_rearm_check(pconnection_t *pc) {
     if (pc->write_blocked)
       wanted_now |= EPOLLOUT;
     else {
-      pn_bytes_t wbuf = pn_connection_driver_write_buffer(&pc->driver);
-      if (wbuf.size > 0)
+      if (pc->wbuf_remaining > 0)
         wanted_now |= EPOLLOUT;
     }
   }
+  if (!wanted_now && dbgz) fprintf(stderr, "=rearmchk no want %p\n", (void *) &pc->context);
   if (!wanted_now) return false;
-
-  uint32_t have_now = pc->current_arm ?  pc->current_arm : pc->current_arm_2;
-  uint32_t needed = wanted_now & ~have_now;
-  if (!needed) return false;
-
+  if (wanted_now == pc->current_arm && dbgz) fprintf(stderr, "=rearmchk want same %d %p\n", wanted_now, (void *) &pc->context);
+  if (wanted_now == pc->current_arm) return false;
+  if (dbgz) fprintf(stderr, "=rearmchk needed old %d  new %d   %p  %d %d\n", pc->current_arm, wanted_now, (void *) &pc->context, pc->read_blocked, pc->write_blocked);
   lock(&pc->rearm_mutex);      /* unlocked in pconnection_rearm... */
   // Always favour main epollfd
-  if (!pc->current_arm) {
-    pc->current_arm = pc->psocket.epoll_io.wanted = needed;
-    pc->rearm_target = &pc->psocket.epoll_io;
-  } else {
-    pc->current_arm_2 = pc->epoll_io_2.wanted = needed;
-    pc->rearm_target = &pc->epoll_io_2;
-  }
+  
+  pc->current_arm = pc->psocket.epoll_io.wanted = wanted_now;
   return true;                     /* ... so caller MUST call pconnection_rearm */
 }
 
 /* Call without lock */
 static inline void pconnection_rearm(pconnection_t *pc) {
-  if (pc->rearm_target == &pc->psocket.epoll_io) {
-    rearm(pc->psocket.proactor, pc->rearm_target);
-  } else {
-    rearm_2(pc->psocket.proactor, pc->rearm_target);
-  }
-  pc->rearm_target = NULL;
+  rearm(pc->psocket.proactor, &pc->psocket.epoll_io);
   unlock(&pc->rearm_mutex);
   // Return immediately.  pc may have just been freed by another thread.
 }
 
+/* Only call when context switch is imminent.  Sched lock is highly contested. */
+// Call bith both context and sched locks.
+static bool pconnection_sched_sync(pconnection_t *pc) {
+  if (pc->sched_timeout) {
+    pc->tick_pending = true;
+    pc->sched_timeout = false;
+  }
+  if (pc->psocket.sched_io_events) {
+    pc->new_events = pc->psocket.sched_io_events;
+    pc->psocket.sched_io_events = 0;
+    pc->current_arm = 0;  // or outside lock?
+  }
+  if (pc->context.sched_wake) {
+    pop_wake(&pc->context);  // scheduler
+    wake_done(&pc->context); // wake system
+  }
+
+  // Indicate if there are free proactor threads
+  pn_proactor_t *p = pc->context.proactor;
+  return p->poller_suspended || p->suspend_list_head;
+}
+
+/* Call with context lock and having done a write_flush() to "know" the value of wbuf_remaining */
 static inline bool pconnection_work_pending(pconnection_t *pc) {
-  if (pc->new_events || pc->new_events_2 || pc->wake_count || pc->tick_pending || pc->queued_disconnect)
+  assert(pc->wbuf_valid);
+  if (pc->new_events || pc->wake_count || pc->tick_pending || pc->queued_disconnect)
     return true;
   if (!pc->read_blocked && !pconnection_rclosed(pc))
     return true;
-  pn_bytes_t wbuf = pn_connection_driver_write_buffer(&pc->driver);
-  return (wbuf.size > 0 && !pc->write_blocked);
+  return (pc->wbuf_remaining > 0 && !pc->write_blocked);
 }
 
+/* Call with no locks. */
 static void pconnection_done(pconnection_t *pc) {
+  pn_proactor_t *p = pc->context.proactor;
+  tslot_t *ts = pc->context.runner;
+  write_flush(pc);
+  if (dbgy(&pc->context)) pc->zzdones++;
   bool notify = false;
   lock(&pc->context.mutex);
   pc->context.working = false;  // So we can wake() ourself if necessary.  We remain the de facto
-                                // working context while the lock is held.
+                                // working context while the lock is held.  Need sched_sync too to drain possible stale wake.
   pc->hog_count = 0;
-  if (pconnection_has_event(pc) || pconnection_work_pending(pc)) {
+  bool has_event = pconnection_has_event(pc);
+  // Do as little as possible while holding the sched lock
+  lock(&p->sched_mutex);
+  pconnection_sched_sync(pc);
+  if (has_event || pconnection_work_pending(pc)) {
     notify = wake(&pc->context);
   } else if (pn_connection_driver_finished(&pc->driver)) {
+    unlock(&p->sched_mutex);
+    if (dbgz) fprintf(stderr, "pc_done_finished      %p\n", (void *) pc);
     pconnection_begin_close(pc);
     if (pconnection_is_final(pc)) {
       unlock(&pc->context.mutex);
+      if (dbgz) fprintf(stderr, "pc_done_cleanup      %p\n", (void *) pc);
       pconnection_cleanup(pc);
+      // pc may be undefined now
+      lock(&p->sched_mutex);
+      unassign_thread_lh(ts, UNUSED);      
+      unlock(&p->sched_mutex);
       return;
     }
+    lock(&p->sched_mutex);
   }
+  if (dbgz) fprintf(stderr, "zepd pc %p   t%d\n", (void *) &pc->context, ZZZts(p, pc->context.prev_runner));
+  unassign_thread_lh(ts, UNUSED);
+  unlock(&p->sched_mutex);
   bool rearm = pconnection_rearm_check(pc);
+  ensure_wbuf(pc);
   unlock(&pc->context.mutex);
   if (notify) wake_notify(&pc->context);
   if (rearm) pconnection_rearm(pc);  // May free pc on another thread.  Return.
@@ -1053,11 +1461,24 @@ static void pconnection_done(pconnection_t *pc) {
 }
 
 // Return true unless error
-static bool pconnection_write(pconnection_t *pc, pn_bytes_t wbuf) {
-  ssize_t n = send(pc->psocket.sockfd, wbuf.start, wbuf.size, MSG_NOSIGNAL);
+ static bool pconnection_write(pconnection_t *pc) {
+  size_t wbuf_size = pc->wbuf_remaining;
+  ssize_t n = send(pc->psocket.sockfd, pc->wbuf_current, wbuf_size, MSG_NOSIGNAL);
+  if (dbgz) fprintf(stderr, "    ----> %p %d\n", (void *) &pc->context, (int) n);
+  if (ZZZdbgy) pc->zzsysw++;
   if (n > 0) {
-    pn_connection_driver_write_done(&pc->driver, n);
-    if ((size_t) n < wbuf.size) pc->write_blocked = true;
+    if (ZZZdbgy) pc->zzsnd++;
+
+    pc->wbuf_completed += n;
+    pc->wbuf_remaining -= n;
+    pc->io_doublecheck = false;
+    if (pc->wbuf_remaining)
+      pc->write_blocked = true;
+    else {
+      // No need to aggregate multiple writes
+      pn_connection_driver_write_done(&pc->driver, pc->wbuf_completed);
+      pc->wbuf_completed = 0;
+    }
   } else if (errno == EWOULDBLOCK) {
     pc->write_blocked = true;
   } else if (!(errno == EAGAIN || errno == EINTR)) {
@@ -1066,11 +1487,12 @@ static bool pconnection_write(pconnection_t *pc, pn_bytes_t wbuf) {
   return true;
 }
 
+// Never call with any locks held.
 static void write_flush(pconnection_t *pc) {
+  ensure_wbuf(pc);
   if (!pc->write_blocked && !pconnection_wclosed(pc)) {
-    pn_bytes_t wbuf = pn_connection_driver_write_buffer(&pc->driver);
-    if (wbuf.size > 0) {
-      if (!pconnection_write(pc, wbuf)) {
+    if (pc->wbuf_remaining > 0) {
+      if (!pconnection_write(pc)) {
         psocket_error(&pc->psocket, errno, pc->disconnected ? "disconnected" : "on write to");
       }
     }
@@ -1086,7 +1508,7 @@ static void write_flush(pconnection_t *pc) {
 static void pconnection_connected_lh(pconnection_t *pc);
 static void pconnection_maybe_connect_lh(pconnection_t *pc);
 
-/*
+/* BOGUS DOC with new epoll ZZZZZ
  * May be called concurrently from multiple threads:
  *   pn_event_batch_t loop (topup is true)
  *   timer (timeout is true)
@@ -1095,8 +1517,9 @@ static void pconnection_maybe_connect_lh(pconnection_t *pc);
  *   one or more wake()
  * Only one thread becomes (or always was) the working thread.
  */
-static pn_event_batch_t *pconnection_process(pconnection_t *pc, uint32_t events, bool timeout, bool topup, bool is_io_2) {
-  bool inbound_wake = !(events | timeout | topup);
+static pn_event_batch_t *pconnection_process(pconnection_t *pc, uint32_t events, bool timeout, bool sched_wake, bool topup) {
+//  bool inbound_wake = !(events | timeout | topup);
+  bool inbound_wake = sched_wake;
   bool rearm_timer = false;
   bool timer_fired = false;
   bool waking = false;
@@ -1104,6 +1527,7 @@ static pn_event_batch_t *pconnection_process(pconnection_t *pc, uint32_t events,
 
   // Don't touch data exclusive to working thread (yet).
 
+  if (dbgz) fprintf(stderr, "pc_proc %d %d %d %d     t%d %p\n", (int) events, timeout, sched_wake, topup, ZZZts(pc->context.proactor, pc->context.runner), (void *) &pc->context);
   if (timeout) {
     rearm_timer = true;
     timer_fired = ptimer_callback(&pc->timer) != 0;
@@ -1111,17 +1535,15 @@ static pn_event_batch_t *pconnection_process(pconnection_t *pc, uint32_t events,
   lock(&pc->context.mutex);
 
   if (events) {
-    if (is_io_2)
-      pc->new_events_2 = events;
-    else
-      pc->new_events = events;
+    pc->new_events = events;
+    pc->current_arm = 0;
     events = 0;
   }
-  else if (timer_fired) {
+  if (timer_fired) {
     pc->tick_pending = true;
     timer_fired = false;
   }
-  else if (inbound_wake) {
+  if (inbound_wake) {
     wake_done(&pc->context);
     inbound_wake = false;
   }
@@ -1171,18 +1593,10 @@ static pn_event_batch_t *pconnection_process(pconnection_t *pc, uint32_t events,
     tick_required = !closed;
   }
 
-  uint32_t update_events = 0;
   if (pc->new_events) {
-    update_events = pc->new_events;
+    uint32_t update_events = pc->new_events;
     pc->current_arm = 0;
     pc->new_events = 0;
-  }
-  if (pc->new_events_2) {
-    update_events |= pc->new_events_2;
-    pc->current_arm_2 = 0;
-    pc->new_events_2 = 0;
-  }
-  if (update_events) {
     if (!pc->context.closing) {
       if ((update_events & (EPOLLHUP | EPOLLERR)) && !pconnection_rclosed(pc) && !pconnection_wclosed(pc))
         pconnection_maybe_connect_lh(pc);
@@ -1217,11 +1631,16 @@ static pn_event_batch_t *pconnection_process(pconnection_t *pc, uint32_t events,
     pn_rwbytes_t rbuf = pn_connection_driver_read_buffer(&pc->driver);
     if (rbuf.size > 0 && !pc->read_blocked) {
       ssize_t n = read(pc->psocket.sockfd, rbuf.start, rbuf.size);
+      if (ZZZdbgy) pc->zzsysr++;
+      if (dbgz) fprintf(stderr, "    <---- %p %d\n", (void *) &pc->context, (int) n);
 
       if (n > 0) {
         pn_connection_driver_read_done(&pc->driver, n);
+        invalidate_wbuf(pc);
         pconnection_tick(pc);         /* check for tick changes. */
         tick_required = false;
+        pc->io_doublecheck = false;
+        if (ZZZdbgy) pc->zzrcv++;
         if (!pn_connection_driver_read_closed(&pc->driver) && (size_t)n < rbuf.size)
           pc->read_blocked = true;
       }
@@ -1239,6 +1658,7 @@ static pn_event_batch_t *pconnection_process(pconnection_t *pc, uint32_t events,
   if (tick_required) {
     pconnection_tick(pc);         /* check for tick changes. */
     tick_required = false;
+    invalidate_wbuf(pc);
   }
 
   if (topup) {
@@ -1247,6 +1667,7 @@ static pn_event_batch_t *pconnection_process(pconnection_t *pc, uint32_t events,
   }
 
   if (pconnection_has_event(pc)) {
+    invalidate_wbuf(pc);
     return &pc->batch;
   }
 
@@ -1260,8 +1681,12 @@ static pn_event_batch_t *pconnection_process(pconnection_t *pc, uint32_t events,
   }
 
   // Never stop working while work remains.  hog_count exception to this rule is elsewhere.
-  if (pconnection_work_pending(pc))
+  lock(&pc->context.proactor->sched_mutex);
+  bool workers_free = pconnection_sched_sync(pc);
+  unlock(&pc->context.proactor->sched_mutex);
+  if (pconnection_work_pending(pc)) {
     goto retry;  // TODO: get rid of goto without adding more locking
+  }
 
   pc->context.working = false;
   pc->hog_count = 0;
@@ -1272,6 +1697,15 @@ static pn_event_batch_t *pconnection_process(pconnection_t *pc, uint32_t events,
       pconnection_cleanup(pc);
       return NULL;
     }
+  }
+
+  if (workers_free && !pc->context.closing && !pc->io_doublecheck) {
+    // check one last time for new io before context switch
+    pc->io_doublecheck = true;
+    pc->read_blocked = false;
+    pc->write_blocked = false;
+    pc->context.working = true;
+    goto retry;
   }
 
   if (!pc->timer_armed && !pc->timer.shutting_down && pc->timer.timerfd >= 0) {
@@ -1680,6 +2114,7 @@ static void listener_accept_lh(psocket_t *ps) {
   acceptor_t *acceptor = psocket_acceptor(ps);
   assert(acceptor->accepted_fd < 0); /* Shouldn't already have an accepted_fd */
   acceptor->accepted_fd = accept(ps->sockfd, NULL, 0);
+  if (dbgz) fprintf(stderr, "    l accept %p  %d\n", (void *) &l->context, acceptor->accepted_fd);
   if (acceptor->accepted_fd >= 0) {
     //    acceptor_t *acceptor = listener_list_next(pending_acceptors);
     listener_list_append(&l->pending_acceptors, acceptor);
@@ -1695,30 +2130,39 @@ static void listener_accept_lh(psocket_t *ps) {
 }
 
 /* Process a listening socket */
-static pn_event_batch_t *listener_process(psocket_t *ps, uint32_t events) {
+static pn_event_batch_t *listener_process(pn_listener_t *l, int n_events, bool wake) {
   // TODO: some parallelization of the accept mechanism.
-  pn_listener_t *l = psocket_listener(ps);
-  acceptor_t *a = psocket_acceptor(ps);
+//  pn_listener_t *l = psocket_listener(ps);
+//  acceptor_t *a = psocket_acceptor(ps);
+
   lock(&l->context.mutex);
-  if (events) {
-    a->armed = false;
-    if (l->context.closing) {
-      lock(&l->rearm_mutex);
-      stop_polling(&ps->epoll_io, ps->proactor->epollfd);
-      unlock(&l->rearm_mutex);
-      close(ps->sockfd);
-      ps->sockfd = -1;
-      l->active_count--;
-    }
-    else {
-      if (events & EPOLLRDHUP) {
-        /* Calls listener_begin_close which closes all the listener's sockets */
-        psocket_error(ps, errno, "listener epoll");
-      } else if (!l->context.closing && events & EPOLLIN) {
-        listener_accept_lh(ps);
+  if (n_events) {
+    for (size_t i = 0; i < l->acceptors_size; i++) {
+      psocket_t *ps = &l->acceptors[i].psocket;
+      if (ps->working_io_events) {
+        uint32_t events = ps->working_io_events;
+        ps->working_io_events = 0;
+        l->acceptors[i].armed = false;
+        if (l->context.closing) {
+          lock(&l->rearm_mutex);
+          stop_polling(&ps->epoll_io, ps->proactor->epollfd);
+          unlock(&l->rearm_mutex);
+          close(ps->sockfd);
+          ps->sockfd = -1;
+          l->active_count--;
+        }
+        else {
+          if (events & EPOLLRDHUP) {
+            /* Calls listener_begin_close which closes all the listener's sockets */
+            psocket_error(ps, errno, "listener epoll");
+          } else if (!l->context.closing && events & EPOLLIN) {
+            listener_accept_lh(ps);
+          }
+        }
       }
     }
-  } else {
+  }
+  if (wake) {
     wake_done(&l->context); // callback accounting
   }
   pn_event_batch_t *lb = NULL;
@@ -1757,16 +2201,42 @@ static pn_event_t *listener_batch_next(pn_event_batch_t *batch) {
 }
 
 static void listener_done(pn_listener_t *l) {
+  pn_proactor_t *p = l->context.proactor;
+  tslot_t *ts = l->context.runner;
   bool notify = false;
   lock(&l->context.mutex);
   l->context.working = false;
 
-  if (listener_can_free(l)) {
+  lock(&p->sched_mutex);
+  int n_events = 0;
+  for (size_t i = 0; i < l->acceptors_size; i++) {
+    psocket_t *ps = &l->acceptors[i].psocket;
+    if (ps->sched_io_events) {
+      ps->working_io_events = ps->sched_io_events;
+      ps->sched_io_events = 0;
+    }
+    if (ps->working_io_events)
+      n_events++;
+  }
+  if (l->context.sched_wake) {
+    pop_wake(&l->context);
+    wake_done(&l->context);
+  }
+
+  if (!n_events && listener_can_free(l)) {
+    unlock(&p->sched_mutex);
     unlock(&l->context.mutex);
     pn_listener_free(l);
+    lock(&p->sched_mutex);
+    unassign_thread_lh(ts, UNUSED);      
+    unlock(&p->sched_mutex);
     return;
-  } else if (listener_has_event(l))
+  } else if (n_events || listener_has_event(l))
     notify = wake(&l->context);
+
+  unassign_thread_lh(ts, UNUSED);
+  if (dbgz) fprintf(stderr, "zepd l %p  t%d\n", (void *) &l->context, ZZZts(p, l->context.prev_runner));
+  unlock(&p->sched_mutex);
   unlock(&l->context.mutex);
   if (notify) wake_notify(&l->context);
 }
@@ -1839,6 +2309,7 @@ void pn_listener_accept2(pn_listener_t *l, pn_connection_t *c, pn_transport_t *t
     rearm(rearming_ps->proactor, &rearming_ps->epoll_io);
     unlock(&l->rearm_mutex);
   }
+  if (dbgz) fprintf(stderr, "listener accept    rearm: %d\n", rearming_ps != NULL);
   if (notify) wake_notify(&l->context);
 }
 
@@ -1848,34 +2319,41 @@ void pn_listener_accept2(pn_listener_t *l, pn_connection_t *c, pn_transport_t *t
 // ========================================================================
 
 /* Set up an epoll_extended_t to be used for wakeup or interrupts */
-static void epoll_wake_init(epoll_extended_t *ee, int eventfd, int epollfd) {
+ static void epoll_wake_init(epoll_extended_t *ee, int eventfd, int epollfd, bool always_set) {
   ee->psocket = NULL;
   ee->fd = eventfd;
   ee->type = WAKE;
-  ee->wanted = EPOLLIN;
+  if (always_set) {
+    uint64_t increment = 1;
+    if (write(eventfd, &increment, sizeof(uint64_t)) != sizeof(uint64_t))
+      EPOLL_FATAL("setting eventfd", errno);
+    // eventfd is set forever.  No reads, just rearms as needed.
+    ee->wanted = 0;
+  } else {
+    ee->wanted = EPOLLIN;
+  }
   ee->polling = false;
   start_polling(ee, epollfd);  // TODO: check for error
-}
-
-/* Set up the epoll_extended_t to be used for secondary socket events */
-static void epoll_secondary_init(epoll_extended_t *ee, int epoll_fd_2, int epollfd) {
-  ee->psocket = NULL;
-  ee->fd = epoll_fd_2;
-  ee->type = CHAINED_EPOLL;
-  ee->wanted = EPOLLIN;
-  ee->polling = false;
-  start_polling(ee, epollfd);  // TODO: check for error
+  if (always_set)
+    ee->wanted = EPOLLIN;      // for all subsequent rearms
 }
 
 pn_proactor_t *pn_proactor() {
+  if (getenv("EPOLL_PRF")) {printf("  < new_epoll_5x > \n"); fflush(stdout); }
+  if (getenv("EPOLL_DBGZ")) dbgz = true;
+  if (getenv("EPOLL_DBGY")) ZZZdbgy = true;
+  if (getenv("EPOLL_SPIN")) ZZZspins = atoi(getenv("EPOLL_SPIN"));
+  if (ZZZspins) {printf("  < spins %d > \n", ZZZspins); fflush(stdout); }
   pn_proactor_t *p = (pn_proactor_t*)calloc(1, sizeof(*p));
   if (!p) return NULL;
   p->epollfd = p->eventfd = p->timer.timerfd = -1;
   pcontext_init(&p->context, PROACTOR, p, p);
   pmutex_init(&p->eventfd_mutex);
+  pmutex_init(&p->sched_mutex);
+  pmutex_init(&p->tslot_mutex);
   ptimer_init(&p->timer, 0);
 
-  if ((p->epollfd = epoll_create(1)) >= 0 && (p->epollfd_2 = epoll_create(1)) >= 0) {
+  if ((p->epollfd = epoll_create(1)) >= 0) {
     if ((p->eventfd = eventfd(0, EFD_NONBLOCK)) >= 0) {
       if ((p->interruptfd = eventfd(0, EFD_NONBLOCK)) >= 0) {
         if (p->timer.timerfd >= 0)
@@ -1883,20 +2361,25 @@ pn_proactor_t *pn_proactor() {
             p->batch.next_event = &proactor_batch_next;
             start_polling(&p->timer.epoll_io, p->epollfd);  // TODO: check for error
             p->timer_armed = true;
-            epoll_wake_init(&p->epoll_wake, p->eventfd, p->epollfd);
-            epoll_wake_init(&p->epoll_interrupt, p->interruptfd, p->epollfd);
-            epoll_secondary_init(&p->epoll_secondary, p->epollfd_2, p->epollfd);
+            epoll_wake_init(&p->epoll_wake, p->eventfd, p->epollfd, true);
+            epoll_wake_init(&p->epoll_interrupt, p->interruptfd, p->epollfd, false);
+            p->kevents_length = TSMAX;  // ZZZ tuneable? variable over time?
+            p->kevents = (struct epoll_event *) calloc(p->kevents_length, sizeof(struct epoll_event));
             return p;
           }
       }
     }
   }
   if (p->epollfd >= 0) close(p->epollfd);
-  if (p->epollfd_2 >= 0) close(p->epollfd_2);
   if (p->eventfd >= 0) close(p->eventfd);
   if (p->interruptfd >= 0) close(p->interruptfd);
   ptimer_finalize(&p->timer);
+  pmutex_finalize(&p->tslot_mutex);
+  pmutex_finalize(&p->sched_mutex);
+  pmutex_finalize(&p->eventfd_mutex);
   if (p->collector) pn_free(p->collector);
+  for (int i = 0; i < p->thread_count; i++)
+    pmutex_finalize(&p->tslots[i].mutex);
   free (p);
   return NULL;
 }
@@ -1906,8 +2389,6 @@ void pn_proactor_free(pn_proactor_t *p) {
   p->shutting_down = true;
   close(p->epollfd);
   p->epollfd = -1;
-  close(p->epollfd_2);
-  p->epollfd_2 = -1;
   close(p->eventfd);
   p->eventfd = -1;
   close(p->interruptfd);
@@ -1929,6 +2410,8 @@ void pn_proactor_free(pn_proactor_t *p) {
   }
 
   pn_collector_free(p->collector);
+  pmutex_finalize(&p->tslot_mutex);
+  pmutex_finalize(&p->sched_mutex);
   pmutex_finalize(&p->eventfd_mutex);
   pcontext_finalize(&p->context);
   free(p);
@@ -1984,17 +2467,24 @@ static pn_event_t *proactor_batch_next(pn_event_batch_t *batch) {
   return log_event(p, e);
 }
 
-static pn_event_batch_t *proactor_process(pn_proactor_t *p, pn_event_type_t event) {
-  bool timer_fired = (event == PN_PROACTOR_TIMEOUT) && ptimer_callback(&p->timer) != 0;
+static pn_event_batch_t *proactor_process(pn_proactor_t *p, bool timeout, bool interrupt, bool wake) {
+  if (dbgz) fprintf(stderr, "p_proc %d %d %d         %d\n", timeout, interrupt, wake, p->context.working);
+  bool timer_fired = timeout && ptimer_callback(&p->timer) != 0;
+  if (interrupt) {
+    (void)read_uint64(p->interruptfd);
+    rearm(p, &p->epoll_interrupt);
+  }
   lock(&p->context.mutex);
-  if (event == PN_PROACTOR_INTERRUPT) {
+  if (interrupt) {
     p->need_interrupt = true;
-  } else if (event == PN_PROACTOR_TIMEOUT) {
+  }
+  if (timeout) {
     p->timer_armed = false;
     if (timer_fired && p->timeout_set) {
       p->need_timeout = true;
     }
-  } else {
+  }
+  if (wake) {
     wake_done(&p->context);
   }
   if (!p->context.working) {       /* Can generate proactor events */
@@ -2009,26 +2499,6 @@ static pn_event_batch_t *proactor_process(pn_proactor_t *p, pn_event_type_t even
   unlock(&p->context.mutex);
   if (rearm_timer)
     rearm(p, &p->timer.epoll_io);
-  return NULL;
-}
-
-static pn_event_batch_t *proactor_chained_epoll_wait(pn_proactor_t *p) {
-  // process one ready pconnection socket event from the secondary/chained epollfd_2
-  struct epoll_event ev = {0};
-  int n = epoll_wait(p->epollfd_2, &ev, 1, 0);
-  if (n < 0) {
-    if (errno != EINTR)
-      perror("epoll_wait"); // TODO: proper log
-  } else if (n > 0) {
-    assert(n == 1);
-    rearm(p, &p->epoll_secondary);
-    epoll_extended_t *ee = (epoll_extended_t *) ev.data.ptr;
-    memory_barrier(ee);
-    assert(ee->type == PCONNECTION_IO_2);
-    pconnection_t *pc = psocket_pconnection(ee->psocket);
-    return pconnection_process(pc, ev.events, false, false, true);
-  }
-  rearm(p, &p->epoll_secondary);
   return NULL;
 }
 
@@ -2047,6 +2517,17 @@ static void proactor_add(pcontext_t *ctx) {
 // return true if safe for caller to free psocket
 static bool proactor_remove(pcontext_t *ctx) {
   pn_proactor_t *p = ctx->proactor;
+  // Disassociate this context from scheduler
+  lock(&p->sched_mutex);
+  ctx->runner->state = DELETING;
+  int count = p->thread_count;
+  for (int i = 0; i < count; i++) {
+    tslot_t *ts = &p->tslots[i];
+    if (ts->prev_context == ctx)
+      ts->prev_context = NULL;
+  }
+  unlock(&p->sched_mutex);
+
   lock(&p->context.mutex);
   bool can_free = true;
   if (ctx->disconnecting) {
@@ -2074,86 +2555,418 @@ static bool proactor_remove(pcontext_t *ctx) {
   bool notify = wake_if_inactive(p);
   unlock(&p->context.mutex);
   if (notify) wake_notify(&p->context);
+  if (dbgz) fprintf(stderr, "proactor remove %d %d\n", notify, can_free);
   return can_free;
 }
 
-static pn_event_batch_t *process_inbound_wake(pn_proactor_t *p, epoll_extended_t *ee) {
-  if  (ee->fd == p->interruptfd) {        /* Interrupts have their own dedicated eventfd */
-    (void)read_uint64(p->interruptfd);
-    rearm(p, &p->epoll_interrupt);
-    return proactor_process(p, PN_PROACTOR_INTERRUPT);
+static tslot_t *find_tslot(pn_proactor_t *p) {
+  pthread_t tid = pthread_self();
+  int count = p->thread_count;
+  for (int i = 0; i < count; i++ )
+    if (p->tmaps[i].id == tid) return p->tmaps[i].tslot;
+  if (count == TSMAX) {
+    if (dbgz) fprintf(stderr, "ZZZ fixme, too many threads to handle %d\n", count + 1);
+    abort();
   }
-  pcontext_t *ctx = wake_pop_front(p);
-  if (ctx) {
-    switch (ctx->type) {
-     case PROACTOR:
-      return proactor_process(p, PN_EVENT_NONE);
-     case PCONNECTION:
-      return pconnection_process((pconnection_t *) ctx->owner, 0, false, false, false);
-     case LISTENER:
-      return listener_process(&((pn_listener_t *) ctx->owner)->acceptors[0].psocket, 0);
-     default:
-      assert(ctx->type == WAKEABLE); // TODO: implement or remove
+  tslot_t *ts = &p->tslots[count];
+  p->tmaps[count].id = tid;
+  p->tmaps[count].tslot = ts;
+  p->thread_count = count + 1;
+  ts->state = NEW;
+  ts->tid = tid;
+  return ts;
+}
+
+// Call with shed_lock held
+static void resume_one_thread(pn_proactor_t *p) {
+  // If pn_proactor_get has an early return, we need to resume one suspended thread (if any)
+  // to be the new poller.
+  // ZZZ revisit for better locking.
+
+  tslot_t *ts = p->suspend_list_head;
+  if (ts) {
+    LL_REMOVE(p, suspend_list, ts);
+    p->suspend_list_count--;
+    resume(p, ts);
+  }
+}
+
+// Call with sched lock.
+static pn_event_batch_t *process(pcontext_t *ctx) {
+  bool ctx_wake = false;
+  if (ctx->sched_wake) {
+    // update the wake status before releasing the sched_mutex
+    pop_wake(ctx);
+    ctx_wake = true;
+  }
+
+  if (ctx->type == PROACTOR) {
+    pn_proactor_t *p = ctx->proactor;
+    bool timeout = p->sched_timeout;
+    if (timeout) p->sched_timeout = false;
+    bool intr = p->sched_interrupt;
+    if (intr) p->sched_interrupt = false;
+    unlock(&p->sched_mutex);
+    return proactor_process(p, timeout, intr, ctx_wake);
+  }
+  pconnection_t *pc = pcontext_pconnection(ctx);
+  if (pc) {
+    uint32_t events = pc->psocket.sched_io_events;
+    if (events) pc->psocket.sched_io_events = 0;
+    bool timeout = pc->sched_timeout;
+    if (timeout) pc->sched_timeout = false;
+    unlock(&ctx->proactor->sched_mutex);
+    return pconnection_process(pc, events, timeout, ctx_wake, false);
+  }
+  pn_listener_t *l = pcontext_listener(ctx);
+  int n_events = 0;
+  for (size_t i = 0; i < l->acceptors_size; i++) {
+    psocket_t *ps = &l->acceptors[i].psocket;
+    if (ps->sched_io_events) {
+      ps->working_io_events = ps->sched_io_events;
+      ps->sched_io_events = 0;
+    }
+    if (ps->working_io_events)
+      n_events++;
+  }
+  unlock(&ctx->proactor->sched_mutex);
+  return listener_process(l, n_events, ctx_wake);
+}
+
+
+// Call with schedule lock held.  Called only by poller thread.
+static pcontext_t *post_event(pn_proactor_t *p, struct epoll_event *evp) {
+  epoll_extended_t *ee = (epoll_extended_t *) evp->data.ptr;
+  pcontext_t *ctx = NULL;
+
+  if (ee->type == WAKE) {
+    if  (ee->fd == p->interruptfd) {        /* Interrupts have their own dedicated eventfd */
+      p->sched_interrupt = true;
+      ctx = &p->context;
+    } else {
+      // main eventfd wake
+      lock(&p->eventfd_mutex);
+      pcontext_t * ZZZpre = p->sched_wake_first;
+      if (!p->sched_wake_first)
+        p->sched_wake_first = p->wake_list_first;
+      p->sched_wake_last = p->wake_list_last;
+      if (!p->sched_wake_current)
+        p->sched_wake_current = p->sched_wake_first;
+      ctx = p->sched_wake_current;
+      unlock(&p->eventfd_mutex);
+      if (dbgz) ZZZwk(p);
+      if (dbgz && ZZZpre) fprintf(stderr, "  saw BAD %p wake first\n", (void *) ZZZpre);
+    }
+  } else if (ee->type == PROACTOR_TIMER) {
+    p->sched_timeout = true;
+    ctx = &p->context;
+  } else {
+    pconnection_t *pc = psocket_pconnection(ee->psocket);
+    if (pc) {
+      ctx = &pc->context;
+      if (ee->type == PCONNECTION_IO) {
+        ee->psocket->sched_io_events = evp->events;
+        pcontext_t *fooc = &pc->context;  // ZZZ
+        if (dbgz) fprintf(stderr, " pc_post %d  %p  t%d %d \n", evp->events, (void *) fooc, ZZZts(fooc->proactor, fooc->runner), fooc->runnable);
+      } else {
+        pc->sched_timeout = true;;
+      }
+    }
+    else {
+      pn_listener_t *l = psocket_listener(ee->psocket);
+      assert(l);
+      ctx = &l->context;
+      ee->psocket->sched_io_events = evp->events;
     }
   }
+  if (ctx && !ctx->runnable && !ctx->runner)
+    return ctx;
   return NULL;
 }
 
-static pn_event_batch_t *proactor_do_epoll(struct pn_proactor_t* p, bool can_block) {
-  int timeout = can_block ? -1 : 0;
-  while(true) {
-    pn_event_batch_t *batch = NULL;
-    struct epoll_event ev = {0};
-    int n = epoll_wait(p->epollfd, &ev, 1, timeout);
 
-    if (n < 0) {
-      if (errno != EINTR)
-        perror("epoll_wait"); // TODO: proper log
-      if (!can_block)
-        return NULL;
-      else
-        continue;
-    } else if (n == 0) {
-      if (!can_block)
-        return NULL;
-      else {
-        perror("epoll_wait unexpected timeout"); // TODO: proper log
-        continue;
+static pcontext_t *post_wake(pn_proactor_t *p, pcontext_t *ctx) {
+  ctx->sched_wake = true;
+  if (dbgz) fprintf(stderr, "  postwk %p  %d  t%d\n", (void *) ctx, ctx->runnable, ZZZts(p, ctx->runner));
+  if (ctx && !ctx->runnable && !ctx->runner)
+    return ctx;
+  return NULL;
+}
+
+
+// call with sched_lock held
+static pcontext_t *next_drain(pn_proactor_t *p, tslot_t *ts) {
+  // There should be very few of these, hopefully as few as one per thread removal on shutdown.
+
+  int count = p->thread_count;
+  for (int i = 0; i < count; i++ ) {
+    tslot_t *ts2 = &p->tslots[i];
+    if (ts2->earmarked) {
+      // undo the old assign thread and earmark.  ts2 may never come back
+      pcontext_t *switch_ctx = ts2->context;
+      if (dbgz) fprintf(stderr, " nxt drn from t%d %p   to t%d \n", ZZZts(p,switch_ctx->runner), (void *) switch_ctx, ZZZts(p, ts));
+      
+      ts2->context = NULL;
+      switch_ctx->runner = NULL;
+      ts2->earmarked = false;
+      p->earmark_count--;
+      assign_thread(ts, switch_ctx);
+      if (dbgz) fprintf(stderr, " nxt drn2 t%d is  %p %p  %d %d\n", ZZZts(p,ts), (void *) ts->context, (void *) ts->prev_context, ts->state, ts->earmarked);
+      pconnection_t *pc = dbgy(switch_ctx); if (pc) pc->zzbaddrn++;
+      return switch_ctx;
+    }
+  }
+  assert(false);
+  return NULL;
+}
+
+// call with sched_lock held
+static pcontext_t *next_runnable(pn_proactor_t *p, tslot_t *ts) {
+  if (ts->context) {
+    // Already assigned
+    if (ts->earmarked) {
+      ts->earmarked = false;
+      if (--p->earmark_count == 0)
+        p->earmark_drain = false;
+    }
+    return ts->context;
+  }
+
+  // warm pairing ?
+  pcontext_t *ctx = ts->prev_context;
+  if (ctx && (ctx->runnable)) { // or ctx->sched_wake too?
+    assign_thread(ts, ctx);
+    pconnection_t *pc = dbgy(ctx); if (pc) pc->zzrandom_win++;
+    return ctx;
+  }
+
+  if (p->earmark_drain) {
+    ctx = next_drain(p, ts);
+    if (p->earmark_count == 0)
+      p->earmark_drain = false;
+    return ctx;
+  }
+
+  // check for an unassigned runnable context or unprocessed wake
+  if (p->n_runnables) {
+    // Any unclaimed runnable?
+    while (p->n_runnables) {
+      ctx = p->runnables[p->next_runnable++];
+      if (p->n_runnables == p->next_runnable)
+        p->n_runnables = 0;
+      if (ctx->runnable) {
+        assign_thread(ts, ctx);
+        pconnection_t *pc = dbgy(ctx); if (pc) pc->zzfallbk++;
+        return ctx;
       }
     }
-    assert(n == 1);
-    epoll_extended_t *ee = (epoll_extended_t *) ev.data.ptr;
-    memory_barrier(ee);
+  }
+  
+  while (p->sched_wake_current) {
+    ctx = p->sched_wake_current;
+    p->sched_wake_current = (ctx == p->sched_wake_last) ? NULL : ctx->next;
+    if (!ctx->runnable && !ctx->runner) {
+      // Only pick up wakes not in runnables list via post_wake()
+      ctx->sched_wake = true;
+      assign_thread(ts, ctx);
+      pconnection_t *pc = dbgy(ctx); if (pc) pc->zzlatewk++;
+      return ctx;
+    }
+  }
 
-    if (ee->type == WAKE) {
-      batch = process_inbound_wake(p, ee);
-    } else if (ee->type == PROACTOR_TIMER) {
-      batch = proactor_process(p, PN_PROACTOR_TIMEOUT);
-    } else if (ee->type == CHAINED_EPOLL) {
-      batch = proactor_chained_epoll_wait(p);  // expect a PCONNECTION_IO_2
-    } else {
-      pconnection_t *pc = psocket_pconnection(ee->psocket);
-      if (pc) {
-        if (ee->type == PCONNECTION_IO) {
-          batch = pconnection_process(pc, ev.events, false, false, false);
-        } else {
-          assert(ee->type == PCONNECTION_TIMER);
-          batch = pconnection_process(pc, 0, true, false, false);
+  return NULL;
+}
+
+static pn_event_batch_t *proactor_do_epoll(pn_proactor_t* p, bool can_block) {
+  lock(&p->tslot_mutex);
+  tslot_t * ts = find_tslot(p);
+  unlock(&p->tslot_mutex);
+  pn_event_batch_t *batch = NULL;
+
+  // TODO: try preassigned context using ts->mutex as memory barrier, and skip sched_mutex on entry
+
+  lock(&p->sched_mutex);
+  assert(ts->context == NULL || ts->earmarked);
+
+  while (true) {
+    // Process outstanding epoll events until we get a batch or need to block.
+
+    pcontext_t *ctx = next_runnable(p, ts);
+    if (dbgz) fprintf(stderr, "__next t%d  %p  t%d   %d\n", ZZZts(p, ts), (void *) ctx, ZZZts(p, p->poller), ctx ? ctx->sched_wake : -1);
+    if (ctx) {
+      batch = process(ctx);  // unlocks sched_lock before returning
+      if (batch) {
+        ts->state = BATCHING; // set without lock.  relevant? ditch this state altogether? ZZZ
+        return batch;
+      }
+      lock(&p->sched_mutex);
+      unassign_thread_lh(ts, PROCESSING);
+      continue;  // Long time may have passed.  Back to beginning.
+    }
+    
+    // poll or wait for a runnable context
+    if (p->poller == NULL) {
+      if (dbgz) fprintf(stderr, "__newpoller        t%d\n", ZZZts(p, ts));
+      p->poller = ts;
+      assert(p->n_runnables == 0);
+      p->next_runnable = 0;
+      p->n_warm_runnables = 0;
+
+      bool unfinished_earmarks = p->earmark_count > 0;
+      bool wakes_pending = false;
+      if (p->sched_wakes_pending) {
+        // wakes exist beyond sched_wake_last and epoll_wake is not armed.
+        wakes_pending = true;
+        p->sched_wakes_pending = false;
+      }
+      bool epoll_immediate = unfinished_earmarks || wakes_pending || !can_block;
+      int timeout = (epoll_immediate) ? 0 : -1;
+      p->poller_suspended = (timeout == -1);
+      unlock(&p->sched_mutex);
+      if (ZZZdbgy) { p->zz_polls++; if (timeout == 0) p->zz_t0polls++; }
+      memset(p->kevents, 0, sizeof(struct epoll_event) * p->kevents_length);
+      int n = epoll_wait(p->epollfd, p->kevents, p->kevents_length, timeout);
+      if (n < 0) perror("epoll ZZZ");
+      ts->zz_polls++;
+      if (epoll_immediate) ts->zz_ipolls++;
+      lock(&p->sched_mutex);
+      p->poller_suspended = false;
+
+      bool unpolled_work = false;
+      if (p->earmark_count > 0) {
+        p->earmark_drain = true;
+        if (dbgz) fprintf(stderr, "__startdrain t%d %d\n", ZZZts(p, ts), p->earmark_count);
+        unpolled_work = true;
+      }
+      if (wakes_pending) {
+        lock(&p->eventfd_mutex);
+        if (!p->sched_wake_first)
+          p->sched_wake_first = p->wake_list_first;
+        p->sched_wake_last = p->wake_list_last;
+        unlock(&p->eventfd_mutex);
+        if (!p->sched_wake_current)
+          p->sched_wake_current = p->sched_wake_first;
+        if (p->sched_wake_current)
+          unpolled_work = true;
+      }
+
+      if (dbgz) fprintf(stderr, "__waited t%d   %d    upw %d drn %d wp %d  cur  %p  %d t\n", ZZZts(p, ts), n, unpolled_work, p->earmark_drain, wakes_pending, (void *) p->sched_wake_current, timeout);
+
+
+
+      if (n < 0) {
+        if (errno != EINTR)
+          perror("epoll_wait"); // TODO: proper log
+        if (!can_block && !unpolled_work) {
+          p->poller = NULL;
+          resume_one_thread(p);
+          ts->state = UNUSED;
+          unlock(&p->sched_mutex);
+          return NULL;
+        }
+        else {
+          p->poller = NULL;          
+          continue;
+        }
+      } else if (n == 0) {
+        if (!can_block && !unpolled_work) {
+          p->poller = NULL;
+          resume_one_thread(p);
+          ts->state = UNUSED;
+          unlock(&p->sched_mutex);
+          return NULL;
+        }
+        else {
+          if (!epoll_immediate)
+            perror("epoll_wait unexpected timeout"); // TODO: proper log
+          if (!wakes_pending) {
+            p->poller = NULL;
+            continue;
+          }
         }
       }
-      else {
-        // TODO: can any of the listener processing be parallelized like IOCP?
-        batch = listener_process(ee->psocket, ev.events);
-      }
-    }
 
-    if (batch) return batch;
-    // No Proton event generated.  epoll_wait() again.
-  }
+      for (int i = 0; i < n; i++) {
+        ctx = post_event(p, &p->kevents[i]);
+        if (ctx)
+          make_runnable(ctx);
+      }
+      if (n > 0)
+        memset(p->kevents, 0, sizeof(struct epoll_event) * n);
+
+      // The list of pending wakes can be very long.  Traverse part of it looking for warm pairings.
+      pcontext_t *wctx = p->sched_wake_current;
+      if (dbgz) ZZZwk(p);
+      while (wctx && p->n_runnables < TSMAX) {
+        ctx = post_wake(p, wctx);
+        if (ctx)
+          make_runnable(ctx);
+        if (wctx == p->sched_wake_last)
+          wctx = NULL;
+        else
+          wctx = wctx->wake_next;
+      }
+      p->sched_wake_current = wctx;
+
+      // Create a list of available threads to put to work.
+      int resume_list_count = 0;
+      for (int i = 0; i < p->n_warm_runnables ; i++) {
+        ctx = p->warm_runnables[i];
+        if (ctx->runner != ts) {
+          p->resume_list[resume_list_count++] = ctx->runner;
+          LL_REMOVE(p, suspend_list, ctx->runner);
+          p->suspend_list_count--;
+        }
+      }
+
+      int can_use = p->suspend_list_count;
+      if (!ts->context)
+        can_use++;
+      // run as many unpaired runnable contexts as possible and allow for a new poller
+      int new_runners = pn_min(p->n_runnables + 1, can_use);
+      if (!ts->context)
+        new_runners--;  // poller available and not in need of resume
+
+      tslot_t *tsp = p->suspend_list_head;
+      for (int i = 0; i < new_runners; i++) {
+        p->resume_list[resume_list_count++] = tsp;
+        LL_REMOVE(p, suspend_list, tsp);
+        p->suspend_list_count--;
+        tsp = tsp->suspend_list_next;
+      }
+
+      if (resume_list_count) {
+        unlock(&p->sched_mutex);
+        for (int i = 0; i < resume_list_count; i++) {
+          resume(p, p->resume_list[i]);
+        }
+        lock(&p->sched_mutex);
+      }      
+      p->poller = NULL;
+    } else if (!can_block) {
+      ts->state = UNUSED;
+      unlock(&p->sched_mutex);
+      return NULL;
+    } else {
+      // todo: loop while !poller_suspended, since new work coming
+      if (p->poller_suspended && p->sched_wakes_pending) {
+        p->sched_wakes_pending = false;
+        unlock(&p->sched_mutex);
+        if (dbgz) fprintf(stderr, " wakes pending rearm done\n");
+        rearm(p, &p->epoll_wake);
+        lock(&p->sched_mutex);
+        continue;
+      }
+      suspend(p, ts);
+    }
+  } // while
 }
 
 pn_event_batch_t *pn_proactor_wait(struct pn_proactor_t* p) {
-  return proactor_do_epoll(p, true);
+//ZZZ restore...   return proactor_do_epoll(p, true);
+  pn_event_batch_t *b  = proactor_do_epoll(p, true);
+  if (dbgz) fprintf(stderr, "zepw %p\n", (void *) b);
+  return b;
 }
 
 pn_event_batch_t *pn_proactor_get(struct pn_proactor_t* p) {
@@ -2163,18 +2976,51 @@ pn_event_batch_t *pn_proactor_get(struct pn_proactor_t* p) {
 void pn_proactor_done(pn_proactor_t *p, pn_event_batch_t *batch) {
   pconnection_t *pc = batch_pconnection(batch);
   if (pc) {
+    pc->context.runner->zz_dones++;
     pconnection_done(pc);
     return;
   }
   pn_listener_t *l = batch_listener(batch);
   if (l) {
+    l->context.runner->zz_dones++;
     listener_done(l);
     return;
   }
   pn_proactor_t *bp = batch_proactor(batch);
   if (bp == p) {
+    p->context.runner->zz_dones++;
     bool notify = false;
+    bool rearm_interrupt = false;
     lock(&p->context.mutex);
+    lock(&p->sched_mutex);
+
+    // ZZZ from process() type == PROACTOR just sched_mutex
+    bool timeout = p->sched_timeout;
+    if (timeout) p->sched_timeout = false;
+    bool intr = p->sched_interrupt;
+    if (intr) {
+      p->sched_interrupt = false;
+      rearm_interrupt = true;
+    }
+    if (p->context.sched_wake) {
+      pop_wake(&p->context);
+      wake_done(&p->context);
+    }
+      
+    // ZZZ from proactor_process just context.mutex
+    if (intr) {
+      p->need_interrupt = true;
+    }
+    // ZZZ ptimer_callback is slow.  revisit timer cancel code in light of single poller change.
+    bool timer_fired = timeout && ptimer_callback(&p->timer) != 0;
+    if (timeout) {
+      p->timer_armed = false;
+      if (timer_fired && p->timeout_set) {
+        p->need_timeout = true;
+      }
+    }
+
+
     bool rearm_timer = !p->timer_armed && !p->shutting_down;
     p->timer_armed = true;
     p->context.working = false;
@@ -2187,11 +3033,19 @@ void pn_proactor_done(pn_proactor_t *p, pn_event_batch_t *batch) {
     if (proactor_has_event(p))
       if (wake(&p->context))
         notify = true;
+    tslot_t *ts = p->context.runner;
+    unassign_thread_lh(ts, UNUSED);
+    unlock(&p->sched_mutex);
     unlock(&p->context.mutex);
     if (notify)
       wake_notify(&p->context);
     if (rearm_timer)
       rearm(p, &p->timer.epoll_io);
+    if (rearm_interrupt) {
+      (void)read_uint64(p->interruptfd);
+      rearm(p, &p->epoll_interrupt);
+    }
+    if (dbgz) fprintf(stderr, "zepd proactor %p  %p t%d\n", (void *) batch, (void *) &p->context, ZZZts(p, p->context.prev_runner));
     return;
   }
 }
