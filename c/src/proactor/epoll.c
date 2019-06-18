@@ -547,6 +547,7 @@ struct pn_proactor_t {
   int kevents_length;
   pcontext_t *warm_runnables[TSMAX];
   int n_warm_runnables;
+  tslot_t *last_earmark;
 
 
   tslotmap_t tmaps[TSMAX];
@@ -561,6 +562,7 @@ struct pn_proactor_t {
   bool earmark_drain;
   bool sched_wakes_pending;
   int zz_polls, zz_t0polls;
+  int ZZZpoller_immediate, ZZZpoller_unassigned;
 };
 
 // ==========  ZZZ perf debug stuff ==========
@@ -582,6 +584,7 @@ static int ZZZtsched_bump = 0;
 static int ZZZrconns = 0;
 static int ZZZclosed = 0;
 static bool ZZZrrr = false;
+static bool ZZZep_immediate = false;
 static uint64_t ZZZr_start = 0;
 static uint64_t ZZZi_start = 0;
 static uint64_t ZZZi_ticks = 0;
@@ -959,6 +962,15 @@ static void earmark_thread(tslot_t *ts, pcontext_t *ctx) {
 }
 
 // Call with sched_mutex locked
+static void remove_earmark(tslot_t *ts) {
+  pcontext_t *ctx = ts->context;
+  ts->context = NULL;
+  ctx->runner = NULL;
+  ts->earmarked = false;
+  ctx->proactor->earmark_count--;
+}
+
+// Call with sched_mutex locked
 static void make_runnable(pcontext_t *ctx) {
   pn_proactor_t *p = ctx->proactor;
   assert(p->n_runnables <= TSMAX);
@@ -978,6 +990,7 @@ static void make_runnable(pcontext_t *ctx) {
     if (ts->state == UNUSED && !p->earmark_drain) {
       earmark_thread(ts, ctx);
       pconnection_t *pc = dbgy(ctx); if (pc) pc->zzearmk++;
+      p->last_earmark = ts;
       return;
     }
   }
@@ -1309,7 +1322,7 @@ static void pconnection_cleanup(pconnection_t *pc) {
     fprintf(stdout, "%d  |  %d %d %d %d  |  w %d e %d r %d f %d lw %d  | %d\n", pc->zzdones, pc->zzsysr, pc->zzrcv, pc->zzsysw, pc->zzsnd,        pc->zzwarm, pc->zzearmk, pc->zzrandom_win, pc->zzfallbk, pc->zzlatewk, pc->zzbaddrn);
 
     double rpct = ZZZr_ticks ? (double) ctx->ZZZr_ticks * 100 / ZZZr_ticks : 0.0;
-    fprintf(stdout, "p  %d %d   run %" PRIu64  " (%.2f)\n", p->zz_polls, p->zz_t0polls, ctx->ZZZr_ticks, rpct);
+    fprintf(stdout, "p  %d %d   run %" PRIu64  " (%.2f)    immed %d  unassigned %d\n", p->zz_polls, p->zz_t0polls, ctx->ZZZr_ticks, rpct, p->ZZZpoller_immediate, p->ZZZpoller_unassigned);
     if (ZZZr_ticks || !ZZZrconns) {
       int count = p->thread_count;
       for (int i = 0; i < count; i++ ) {
@@ -2439,6 +2452,7 @@ pn_proactor_t *pn_proactor() {
   if (getenv("EPOLL_PRF")) {printf("  < new_epoll_5x > \n"); fflush(stdout); }
   if (getenv("EPOLL_DBGZ")) dbgz = true;
   if (getenv("EPOLL_DBGY")) ZZZdbgy = true;
+  if (getenv("EPOLL_IMMED")) ZZZep_immediate = true;
   if (getenv("EPOLL_SPIN")) ZZZspins = atoi(getenv("EPOLL_SPIN"));
   if (getenv("EPOLL_RCONN")) ZZZrconns = atoi(getenv("EPOLL_RCONN"));
   if (getenv("EPOLL_TSBMP")) ZZZtsched_bump = atoi(getenv("EPOLL_TSBMP"));
@@ -2793,7 +2807,6 @@ static pcontext_t *post_wake(pn_proactor_t *p, pcontext_t *ctx) {
   return NULL;
 }
 
-
 // call with sched_lock held
 static pcontext_t *next_drain(pn_proactor_t *p, tslot_t *ts) {
   // There should be very few of these, hopefully as few as one per thread removal on shutdown.
@@ -2803,13 +2816,10 @@ static pcontext_t *next_drain(pn_proactor_t *p, tslot_t *ts) {
     tslot_t *ts2 = &p->tslots[i];
     if (ts2->earmarked) {
       // undo the old assign thread and earmark.  ts2 may never come back
+      //ZZZ      pcontext_t *switch_ctx = ts2->context;
+      //ZZZ      if (dbgz) fprintf(stderr, " nxt drn from t%d %p   to t%d \n", ZZZts(p,switch_ctx->runner), (void *) switch_ctx, ZZZts(p, ts));
       pcontext_t *switch_ctx = ts2->context;
-      if (dbgz) fprintf(stderr, " nxt drn from t%d %p   to t%d \n", ZZZts(p,switch_ctx->runner), (void *) switch_ctx, ZZZts(p, ts));
-
-      ts2->context = NULL;
-      switch_ctx->runner = NULL;
-      ts2->earmarked = false;
-      p->earmark_count--;
+      remove_earmark(ts2);
       assign_thread(ts, switch_ctx);
       if (dbgz) fprintf(stderr, " nxt drn2 t%d is  %p %p  %d %d\n", ZZZts(p,ts), (void *) ts->context, (void *) ts->prev_context, ts->state, ts->earmarked);
       pconnection_t *pc = dbgy(switch_ctx); if (pc) pc->zzbaddrn++;
@@ -2933,6 +2943,7 @@ static pn_event_batch_t *proactor_do_epoll(pn_proactor_t* p, bool can_block) {
       assert(p->n_runnables == 0);
       p->next_runnable = 0;
       p->n_warm_runnables = 0;
+      p->last_earmark = NULL;
 
       bool unfinished_earmarks = p->earmark_count > 0;
       bool wakes_pending = false;
@@ -3052,6 +3063,34 @@ static pn_event_batch_t *proactor_do_epoll(pn_proactor_t* p, bool can_block) {
           wctx = wctx->wake_next;
           wctx->sched_wake = true;
         }
+
+      if (ZZZep_immediate && !ts->context) {
+        // Poller gets to run if possible
+        pcontext_t *pctx;
+        if (p->n_runnables) {
+          pctx = p->runnables[0];
+          if (++p->next_runnable == p->n_runnables)
+            p->n_runnables = 0;
+        } else if (p->n_warm_runnables) {
+          pctx = p->warm_runnables[--p->n_warm_runnables];
+          tslot_t *ts2 = pctx->runner;
+          ts2->prev_context = ts2->context = NULL;
+          pctx->runner = NULL;
+          pconnection_t *pc = dbgy(pctx); if (pc) pc->zzwarm--;
+        } else if (p->last_earmark) {
+          pctx = p->last_earmark->context;
+          remove_earmark(p->last_earmark);
+          if (p->earmark_count == 0)
+            p->earmark_drain = false;
+        } else {
+          pctx = NULL;
+        }
+        if (pctx) {
+          assign_thread(ts, pctx);
+          p->ZZZpoller_immediate++;
+        }
+      }
+      if (!ts->context) p->ZZZpoller_unassigned++;
 
       // Create a list of available threads to put to work.
       int resume_list_count = 0;
