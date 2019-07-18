@@ -1398,8 +1398,9 @@ ts2->ZZZnepw, ts2->ZZZbatches, ts2->ZZZnp, ts2->ZZZnsusp, ts2->ZZZdeeps);
       if (ZZZi_ticks) fprintf(stdout, "idle %.4f\n", (double) ZZZi_ticks * 100 / ZZZr_ticks);
     }
     fflush(stdout);
-    if (ZZZr_ticks && ZZZready_fd == -2) exit (3);
   }
+  if (ZZZready_fd == -2 && ZZZclosed == ZZZrconns) exit (3);
+
   lock(&pc->context.mutex);
   bool can_free = proactor_remove(&pc->context);
   unlock(&pc->context.mutex);
@@ -1474,6 +1475,7 @@ static pn_event_t *pconnection_batch_next(pn_event_batch_t *batch) {
     idle_threads = (p->suspend_list_head != NULL);
     unlock(&p->sched_mutex);
     if (idle_threads) {
+      write_flush(pc);  // May generate transport event
       pc->read_blocked = pc->write_blocked = false;
       pconnection_process(pc, 0, false, false, true);
       e = pn_connection_driver_next_event(&pc->driver);
@@ -2540,7 +2542,7 @@ pn_proactor_t *pn_proactor() {
     }
   }
   if (ZZZspins) {printf("  < spins %d > \n", ZZZspins); fflush(stdout); }
-  if (getenv("EPOLL_PRF")) {printf("  < new_epoll_6x > warm=%d immed=%d\n", ZZZwarm_sched, ZZZep_immediate); fflush(stdout); }
+  if (getenv("EPOLL_PRF")) {printf("  < new_epoll_7x > warm=%d immed=%d\n", ZZZwarm_sched, ZZZep_immediate); fflush(stdout); }
   pn_proactor_t *p = (pn_proactor_t*)calloc(1, sizeof(*p));
   if (!p) return NULL;
   p->epollfd = p->eventfd = p->timer.timerfd = -1;
