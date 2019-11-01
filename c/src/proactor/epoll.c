@@ -98,6 +98,7 @@
 
 static bool dbgz = false;
 static bool ZZZdbgy = false;
+static bool dbgev = false;
 
 // TODO: replace timerfd per connection with global lightweight timer mechanism.
 // logging in general
@@ -440,17 +441,17 @@ typedef struct pcontext_t {
 
 typedef enum {
   NEW,
-  UNUSED,
+  UNUSED,                       /* pn_proactor_done() called, may never come back */
   SUSPENDED,
-  PROCESSING,
-  BATCHING,
+  PROCESSING,                   /* Hunting for a context  */
+  BATCHING,                     /* Doing work on behalf of a context */
   DELETING,
   POLLING } tslot_state;
 
 struct tslot_t {
-  pmutex mutex;
+  pmutex mutex;  // suspend and resume
   pthread_cond_t cond;
-  pthread_t tid;
+  pthread_t tid; // ZZZ used? is key anyway
   unsigned int generation;
   bool suspended;
   volatile bool scheduled;
@@ -469,6 +470,7 @@ struct tslot_t {
   uint64_t ZZZsusp_s, ZZZsusp_ticks, ZZZtrs, ZZZtrticks, ZZZsched_ticks, ZZZsched_s, ZZZp_s, ZZZp_ticks;
   int ZZZnp, ZZZnepw, ZZZnsusp, ZZZdeeps, ZZZbatches;
   int ZZZrewakes, ZZZrewakes2, ZZZrewakes3;
+  int ZZZid;
 };
 
 // Fake thread for temporarily disabling the scheduling of a context.
@@ -505,14 +507,10 @@ typedef struct psocket_t {
   uint32_t working_io_events;
 } psocket_t;
 
-#define TSMAX 16
-
 struct pn_proactor_t {
   pcontext_t context;
-  int epollfd;
   ptimer_t timer;
   pn_collector_t *collector;
-  pcontext_t *contexts;         /* in-use contexts for PN_PROACTOR_INACTIVE and cleanup */
   epoll_extended_t epoll_wake;
   epoll_extended_t epoll_interrupt;
   pn_event_batch_t batch;
@@ -524,7 +522,8 @@ struct pn_proactor_t {
   bool timeout_set; /* timeout has been set by user and not yet cancelled or generated event */
   bool timeout_processed;  /* timeout event dispatched in the most recent event batch */
   bool timer_armed; /* timer is armed in epoll */
-  bool shutting_down;
+  int context_count;
+
   // wake subsystem
   int eventfd;
   pmutex eventfd_mutex;
@@ -542,28 +541,33 @@ struct pn_proactor_t {
   pmutex sched_mutex;
   bool sched_timeout;
   bool sched_interrupt;
-  pcontext_t *runnables[TSMAX];
   int n_runnables;
   int next_runnable;
 
+  // Mostly read only: after init or once thread_count stabilizes
+  // ZZZ align...
+  int epollfd;
+  pcontext_t *contexts;         /* in-use contexts for PN_PROACTOR_INACTIVE and cleanup */
+  bool shutting_down;
+
+  pcontext_t **warm_runnables;
+  pcontext_t **runnables;
+  tslot_t **resume_list;
+  struct epoll_event *kevents;
+  int n_warm_runnables;
+  pn_hash_t *tslot_map;
+  int thread_count;
+  int thread_capacity;
+  int runnables_capacity;
+  int kevents_capacity;
 
   tslot_t *suspend_list_head;
   tslot_t *suspend_list_tail;
   int suspend_list_count;
   tslot_t *poller;
   bool poller_suspended;
-  // Scratch vars for poller
-  tslot_t *resume_list[TSMAX];
-  struct epoll_event *kevents; // ZZZ alloca?
-  int kevents_length;
-  pcontext_t *warm_runnables[TSMAX];
-  int n_warm_runnables;
   tslot_t *last_earmark;
 
-
-  tslotmap_t tmaps[TSMAX];
-  tslot_t tslots[TSMAX];
-  int thread_count;
   // ZZZ order vars according to access pattern
   pcontext_t *sched_wake_first;
   pcontext_t *sched_wake_last;
@@ -604,9 +608,9 @@ static uint64_t ZZZi_ticks = 0;
 static int ZZZctxc = 0;
 static int ZZZready_fd = -1;
 
-static int ZZZts(pn_proactor_t *p, tslot_t *ts) {
+static int ZZZts(pn_proactor_t *unused, tslot_t *ts) {
   if (!ts) return -1;
-  return ts - p->tslots;
+  return ts->ZZZid;
 }
 
 static void ZZZwk(pn_proactor_t *p) {
@@ -966,18 +970,19 @@ static bool unassign_thread_lh(tslot_t *ts, tslot_state new_state) {
   pcontext_t *ctx = ts->context;
   bool notify = false;
   bool deleting = (ts->state == DELETING);
-  ctx->runner = NULL;
-  ctx->prev_runner = ts;
-  if (!deleting)
-    ts->prev_context = ts->context;
   ts->context = NULL;
   ts->state = new_state;
+  if (ctx) {
+    ctx->runner = NULL;
+    ctx->prev_runner = ts;
+  }
 
   // All accounting must be complete as next step may drop the sched lock.
   // Check if context has unseen events/wake that need processing.
 
-  if (!deleting) {
+  if (ctx && !deleting) {
     pn_proactor_t *p = ctx->proactor;
+    ts->prev_context = ts->context;
     if (ctx->sched_pending) {
       // Need a new wake
       if (ctx->sched_wake) {
@@ -1025,7 +1030,7 @@ static void remove_earmark(tslot_t *ts) {
 // Call with sched_mutex locked
 static void make_runnable(pcontext_t *ctx) {
   pn_proactor_t *p = ctx->proactor;
-  assert(p->n_runnables <= TSMAX);
+  assert(p->n_runnables <= p->runnables_capacity);
   assert(!ctx->runnable);
   if (ctx->runner) return;
 
@@ -1035,9 +1040,13 @@ static void make_runnable(pcontext_t *ctx) {
     tslot_t *ts = ctx->prev_runner;
     if (ts && ts->prev_context == ctx) {
       if (ts->state == SUSPENDED || ts->state == PROCESSING) {
-        p->warm_runnables[p->n_warm_runnables++] = ctx;
-        assign_thread(ts, ctx);
-        pconnection_t *pc = dbgy(ctx); if (pc) pc->zzwarm++;
+        if (p->n_warm_runnables < p->thread_capacity) {
+          p->warm_runnables[p->n_warm_runnables++] = ctx;
+          assign_thread(ts, ctx);
+          pconnection_t *pc = dbgy(ctx); if (pc) pc->zzwarm++;
+        }
+        else
+          p->runnables[p->n_runnables++] = ctx;
         return;
       }
       if (ts->state == UNUSED && !p->earmark_drain) {
@@ -1378,10 +1387,10 @@ static void pconnection_cleanup(pconnection_t *pc) {
     double rpct = ZZZr_ticks ? (double) ctx->ZZZr_ticks * 100 / ZZZr_ticks : 0.0;
     fprintf(stdout, "p  %d %d   run %" PRIu64  " (%.2f)    immed %d  unassigned %d  lost_thr %d\n", p->zz_polls, p->zz_t0polls, ctx->ZZZr_ticks, rpct, p->ZZZpoller_immediate, p->ZZZpoller_unassigned, p->ZZZlost_threads);
     if (ZZZr_ticks || !ZZZrconns) {
-      int count = p->thread_count;
-      for (int i = 0; i < count; i++ ) {
-        tslot_t *ts2 = &p->tslots[i];
-        fprintf(stdout, "  t%d  %d %d    %d %d    %lld  N %d P %d %d   R %d/%d/%d\n", i, ts2->zz_susp1, ts2->zz_susp2, ts2->zz_rsm1, ts2->zz_rsm2, ts2->foolocks, ts2->zz_dones, ts2->zz_polls, ts2->zz_ipolls, ts2->ZZZrewakes, ts2->ZZZrewakes2, ts2->ZZZrewakes3);
+      lock(&p->tslot_mutex);
+      for (pn_handle_t entry = pn_hash_head(p->tslot_map); entry; entry = pn_hash_next(p->tslot_map, entry)) {
+        tslot_t *ts2 = (tslot_t *) pn_hash_value(p->tslot_map, entry);
+        fprintf(stdout, "  t%d  %d %d    %d %d    %lld  N %d P %d %d   R %d/%d/%d\n", ZZZts(NULL, ts2), ts2->zz_susp1, ts2->zz_susp2, ts2->zz_rsm1, ts2->zz_rsm2, ts2->foolocks, ts2->zz_dones, ts2->zz_polls, ts2->zz_ipolls, ts2->ZZZrewakes, ts2->ZZZrewakes2, ts2->ZZZrewakes3);
         if (ZZZr_ticks) {
           if (ts2->state == SUSPENDED && ZZZrrr) {
             ts2->ZZZsusp_ticks += (ZZZnow - ts2->ZZZsusp_s);
@@ -1395,6 +1404,7 @@ static void pconnection_cleanup(pconnection_t *pc) {
 ts2->ZZZnepw, ts2->ZZZbatches, ts2->ZZZnp, ts2->ZZZnsusp, ts2->ZZZdeeps);
         }
       }
+      unlock(&p->tslot_mutex);
       if (ZZZi_ticks) fprintf(stdout, "idle %.4f\n", (double) ZZZi_ticks * 100 / ZZZr_ticks);
     }
     fflush(stdout);
@@ -1490,6 +1500,8 @@ static pn_event_t *pconnection_batch_next(pn_event_batch_t *batch) {
     }
   }
   if (e) invalidate_wbuf(pc);
+  if (dbgev && e) fprintf(stderr, "  __EV pc %p %s\n", (void *) &pc->context, pn_event_type_name(pn_event_type(e)));
+
   return e;
 }
 
@@ -2382,6 +2394,7 @@ static pn_event_t *listener_batch_next(pn_event_batch_t *batch) {
     close(ZZZready_fd);
     ZZZready_fd = -2;
   }
+  if (dbgev && e) fprintf(stderr, "  __EV l %p  %s\n", (void *) &l->context, pn_event_type_name(pn_event_type(e)));
   return log_event(l, e);
 }
 
@@ -2507,6 +2520,31 @@ void pn_listener_accept2(pn_listener_t *l, pn_connection_t *c, pn_transport_t *t
 // proactor
 // ========================================================================
 
+// Call with sched_mutex. Alloc calls are expensive but only used when thread_count changes.
+static void grow_poller_bufs(pn_proactor_t* p) {
+  // call if p->thread_count > p->thread_capacity
+  assert(p->thread_count == 0 || p->thread_count > p->thread_capacity);
+  do {
+    p->thread_capacity += 8;
+  } while (p->thread_count > p->thread_capacity);
+
+  p->warm_runnables = (pcontext_t **) realloc(p->warm_runnables, p->thread_capacity * sizeof(pcontext_t *));
+  p->resume_list = (tslot_t **) realloc(p->resume_list, p->thread_capacity * sizeof(tslot_t *));
+
+  int old_cap = p->runnables_capacity;
+  if (p->runnables_capacity == 0)
+    p->runnables_capacity = 16;
+  else if (p->runnables_capacity < p->thread_capacity)
+    p->runnables_capacity = p->thread_capacity;
+  if (p->runnables_capacity != old_cap) {
+    p->runnables = (pcontext_t **) realloc(p->runnables, p->runnables_capacity * sizeof(pcontext_t *));
+    p->kevents_capacity = p->runnables_capacity;
+    size_t sz = p->kevents_capacity * sizeof(struct epoll_event);
+    p->kevents = (struct epoll_event *) realloc(p->kevents, sz);
+    memset(p->kevents, 0, sz);
+  }
+}
+
 /* Set up an epoll_extended_t to be used for wakeup or interrupts */
  static void epoll_wake_init(epoll_extended_t *ee, int eventfd, int epollfd, bool always_set) {
   ee->psocket = NULL;
@@ -2530,6 +2568,7 @@ void pn_listener_accept2(pn_listener_t *l, pn_connection_t *c, pn_transport_t *t
 pn_proactor_t *pn_proactor() {
   if (getenv("EPOLL_NOWARM")) ZZZwarm_sched = false;
   if (getenv("EPOLL_DBGZ")) dbgz = true;
+  if (getenv("EPOLL_DBGEV")) dbgev = true;
   if (getenv("EPOLL_DBGY")) ZZZdbgy = true;
   if (getenv("EPOLL_IMMED")) ZZZep_immediate = true;
   if (getenv("EPOLL_SPIN")) ZZZspins = atoi(getenv("EPOLL_SPIN"));
@@ -2562,8 +2601,10 @@ pn_proactor_t *pn_proactor() {
             p->timer_armed = true;
             epoll_wake_init(&p->epoll_wake, p->eventfd, p->epollfd, true);
             epoll_wake_init(&p->epoll_interrupt, p->interruptfd, p->epollfd, false);
-            p->kevents_length = TSMAX;  // ZZZ tuneable? variable over time?
-            p->kevents = (struct epoll_event *) calloc(p->kevents_length, sizeof(struct epoll_event));
+            p->tslot_map = pn_hash(PN_VOID, 0, 0.75);
+            grow_poller_bufs(p);
+
+if (dbgz) fprintf(stderr, "  ___pn_proactor %p\n", (void *) p);
             return p;
           }
       }
@@ -2577,8 +2618,7 @@ pn_proactor_t *pn_proactor() {
   pmutex_finalize(&p->sched_mutex);
   pmutex_finalize(&p->eventfd_mutex);
   if (p->collector) pn_free(p->collector);
-  for (int i = 0; i < p->thread_count; i++)
-    pmutex_finalize(&p->tslots[i].mutex);
+  assert(p->thread_count == 0);
   free (p);
   return NULL;
 }
@@ -2613,6 +2653,16 @@ void pn_proactor_free(pn_proactor_t *p) {
   pmutex_finalize(&p->sched_mutex);
   pmutex_finalize(&p->eventfd_mutex);
   pcontext_finalize(&p->context);
+  for (pn_handle_t entry = pn_hash_head(p->tslot_map); entry; entry = pn_hash_next(p->tslot_map, entry)) {
+    tslot_t *ts = (tslot_t *) pn_hash_value(p->tslot_map, entry);
+    pmutex_finalize(&ts->mutex);
+    free(ts);
+  }
+  pn_free(p->tslot_map);
+  free(p->kevents);
+  free(p->runnables);
+  free(p->warm_runnables);
+  free(p->resume_list);
   free(p);
 }
 
@@ -2663,6 +2713,7 @@ static pn_event_t *proactor_batch_next(pn_event_batch_t *batch) {
   if (e && pn_event_type(e) == PN_PROACTOR_TIMEOUT)
     p->timeout_processed = true;
   unlock(&p->context.mutex);
+  if (dbgev && e) fprintf(stderr, "  __EV _p_  %p %s\n", (void *) &p->context, pn_event_type_name(pn_event_type(e)));
   return log_event(p, e);
 }
 
@@ -2709,6 +2760,7 @@ static void proactor_add(pcontext_t *ctx) {
     ctx->next = p->contexts;
   }
   p->contexts = ctx;
+  p->context_count++;
   ctx->ZZZxid = ++ZZZctxc;
   if (dbgz) fprintf(stderr, "A %d %d\n", ctx->ZZZxid, ctx->type);
   unlock(&p->context.mutex);
@@ -2722,9 +2774,10 @@ static bool proactor_remove(pcontext_t *ctx) {
   if (!p->shutting_down) {
     lock(&p->sched_mutex);
     ctx->runner->state = DELETING;
-    int count = p->thread_count;
-    for (int i = 0; i < count; i++) {
-      tslot_t *ts = &p->tslots[i];
+    for (pn_handle_t entry = pn_hash_head(p->tslot_map); entry; entry = pn_hash_next(p->tslot_map, entry)) {
+      tslot_t *ts = (tslot_t *) pn_hash_value(p->tslot_map, entry);
+      if (ts->context == ctx)
+        ts->context = NULL;
       if (ts->prev_context == ctx)
         ts->prev_context = NULL;
     }
@@ -2754,6 +2807,7 @@ static bool proactor_remove(pcontext_t *ctx) {
     if (ctx->next) {
       ctx->next->prev = ctx->prev;
     }
+    p->context_count--;
   }
   bool notify = wake_if_inactive(p);
   unlock(&p->context.mutex);
@@ -2764,19 +2818,21 @@ static bool proactor_remove(pcontext_t *ctx) {
 
 static tslot_t *find_tslot(pn_proactor_t *p) {
   pthread_t tid = pthread_self();
-  int count = p->thread_count;
-  for (int i = 0; i < count; i++ )
-    if (p->tmaps[i].id == tid) return p->tmaps[i].tslot;
-  if (count == TSMAX) {
-    if (dbgz) fprintf(stderr, "ZZZ fixme, too many threads to handle %d\n", count + 1);
-    abort();
-  }
-  tslot_t *ts = &p->tslots[count];
-  p->tmaps[count].id = tid;
-  p->tmaps[count].tslot = ts;
-  p->thread_count = count + 1;
+  //ZZZ   uintptr_t tid_as_key = (uintptr_t) pthread_self();
+  void *v = pn_hash_get(p->tslot_map, (uintptr_t) tid);
+  if (v)
+    return (tslot_t *) v;
+  tslot_t *ts = (tslot_t *) calloc(1, sizeof(tslot_t));
   ts->state = NEW;
   ts->tid = tid;
+  pmutex_init(&ts->mutex);
+  ts->ZZZid = p->thread_count;
+
+  lock(&p->sched_mutex);
+  // keep important tslot related info thread-safe when holding either the sched or tslot mutex
+  p->thread_count++;
+  pn_hash_put(p->tslot_map, (uintptr_t) tid, ts);
+  unlock(&p->sched_mutex);
   return ts;
 }
 
@@ -2917,11 +2973,11 @@ static pcontext_t *post_wake(pn_proactor_t *p, pcontext_t *ctx) {
 
 // call with sched_lock held
 static pcontext_t *next_drain(pn_proactor_t *p, tslot_t *ts) {
-  // There should be very few of these, hopefully as few as one per thread removal on shutdown.
+  // This should be called seldomly, best case once per thread removal on shutdown.
+  // TODO: how to reduce?  Instrumented near 5 percent of earmarks, 1 in 2000 calls to do_epoll().
 
-  int count = p->thread_count;
-  for (int i = 0; i < count; i++ ) {
-    tslot_t *ts2 = &p->tslots[i];
+  for (pn_handle_t entry = pn_hash_head(p->tslot_map); entry; entry = pn_hash_next(p->tslot_map, entry)) {
+    tslot_t *ts2 = (tslot_t *) pn_hash_value(p->tslot_map, entry);
     if (ts2->earmarked) {
       // undo the old assign thread and earmark.  ts2 may never come back
       pcontext_t *switch_ctx = ts2->context;
@@ -2958,13 +3014,6 @@ static pcontext_t *next_runnable(pn_proactor_t *p, tslot_t *ts) {
     return ctx;
   }
 
-  if (p->earmark_drain) {
-    ctx = next_drain(p, ts);
-    if (p->earmark_count == 0)
-      p->earmark_drain = false;
-    return ctx;
-  }
-
   // check for an unassigned runnable context or unprocessed wake
   if (p->n_runnables) {
     // Any unclaimed runnable?
@@ -2989,6 +3038,13 @@ static pcontext_t *next_runnable(pn_proactor_t *p, tslot_t *ts) {
     return ctx;
   }
 
+  if (p->earmark_drain) {
+    ctx = next_drain(p, ts);
+    if (p->earmark_count == 0)
+      p->earmark_drain = false;
+    return ctx;
+  }
+
   return NULL;
 }
 
@@ -2996,6 +3052,7 @@ static pn_event_batch_t *proactor_do_epoll(pn_proactor_t* p, bool can_block) {
   lock(&p->tslot_mutex);
   tslot_t * ts = find_tslot(p);
   unlock(&p->tslot_mutex);
+  if (dbgz) fprintf(stderr, "  __do_epoll %p t%d\n", (void *) p, ZZZts(p, ts));
   ts->ZZZnepw++;
   ts->generation++;  // wrapping OK.  Just looking for any change
   pn_event_batch_t *batch = NULL;
@@ -3055,6 +3112,8 @@ static pn_event_batch_t *proactor_do_epoll(pn_proactor_t* p, bool can_block) {
       p->poller = ts;
       ts->ZZZnp++;
       assert(p->n_runnables == 0);
+      if (p->thread_count > p->thread_capacity)
+        grow_poller_bufs(p);
       p->next_runnable = 0;
       p->n_warm_runnables = 0;
       p->last_earmark = NULL;
@@ -3077,8 +3136,6 @@ static pn_event_batch_t *proactor_do_epoll(pn_proactor_t* p, bool can_block) {
       p->poller_suspended = (timeout == -1);
       unlock(&p->sched_mutex);
       if (ZZZdbgy) { p->zz_polls++; if (timeout == 0) p->zz_t0polls++; }
-      memset(p->kevents, 0, sizeof(struct epoll_event) * p->kevents_length);
-
 
       if (ts->ZZZsched_s) {
         uint64_t ZZZnow = hrtick();
@@ -3087,7 +3144,7 @@ static pn_event_batch_t *proactor_do_epoll(pn_proactor_t* p, bool can_block) {
         ts->ZZZp_s = ZZZnow;
       }
 
-      int n = epoll_wait(p->epollfd, p->kevents, p->kevents_length, timeout);
+      int n = epoll_wait(p->epollfd, p->kevents, p->kevents_capacity, timeout);
 
       if (ts->ZZZp_s) {
         uint64_t ZZZnow = hrtick();
@@ -3170,7 +3227,8 @@ static pn_event_batch_t *proactor_do_epoll(pn_proactor_t* p, bool can_block) {
         ZZZwk(p);
         unlock(&p->eventfd_mutex);
       }
-      while (wctx && p->n_runnables < TSMAX) {
+      int max_runnables = p->runnables_capacity;
+      while (wctx && p->n_runnables < max_runnables) {
         p->ZZZx99 = true;
         if (wctx->runner == REWAKE_PLACEHOLDER)
           wctx->runner = NULL;  // Allow context to run again.
@@ -3222,6 +3280,7 @@ static pn_event_batch_t *proactor_do_epoll(pn_proactor_t* p, bool can_block) {
       if (!ts->context) p->ZZZpoller_unassigned++;
 
       // Create a list of available threads to put to work.
+
       int resume_list_count = 0;
       for (int i = 0; i < p->n_warm_runnables ; i++) {
         ctx = p->warm_runnables[i];
@@ -3237,7 +3296,7 @@ static pn_event_batch_t *proactor_do_epoll(pn_proactor_t* p, bool can_block) {
       int can_use = p->suspend_list_count;
       if (!ts->context)
         can_use++;
-      // run as many unpaired runnable contexts as possible and allow for a new poller
+      // Run as many unpaired runnable contexts as possible and allow for a new poller.
       int new_runners = pn_min(p->n_runnables + 1, can_use);
       if (!ts->context)
         new_runners--;  // poller available and does not need resume
@@ -3248,6 +3307,9 @@ static pn_event_batch_t *proactor_do_epoll(pn_proactor_t* p, bool can_block) {
           new_runners = p->suspend_list_count;
       }
 
+      // Rare corner case on startup.  New inbound threads can make the suspend_list too big for resume list.
+      new_runners = pn_min(new_runners, p->thread_capacity - resume_list_count);
+
       for (int i = 0; i < new_runners; i++) {
         tslot_t *tsp = p->suspend_list_head;
         assert(tsp);
@@ -3257,6 +3319,9 @@ static pn_event_batch_t *proactor_do_epoll(pn_proactor_t* p, bool can_block) {
         tsp->state = PROCESSING;
       }
 
+      p->poller = NULL;
+      // New poller may run concurrently.  Touch only this thread's stack for rest of block.
+
       if (resume_list_count) {
         unlock(&p->sched_mutex);
         for (int i = 0; i < resume_list_count; i++) {
@@ -3264,17 +3329,17 @@ static pn_event_batch_t *proactor_do_epoll(pn_proactor_t* p, bool can_block) {
         }
         lock(&p->sched_mutex);
       }
-      p->poller = NULL;
     } else if (!can_block) {
       ts->state = UNUSED;
       unlock(&p->sched_mutex);
       return NULL;
     } else {
-      // todo: loop while !poller_suspended, since new work coming
+      // TODO: loop while !poller_suspended, since new work coming
       suspend(p, ts);
     }
   } // while
 }
+
 
 pn_event_batch_t *pn_proactor_wait(struct pn_proactor_t* p) {
 //ZZZ restore non debug code...   return proactor_do_epoll(p, true);
@@ -3284,7 +3349,10 @@ pn_event_batch_t *pn_proactor_wait(struct pn_proactor_t* p) {
 }
 
 pn_event_batch_t *pn_proactor_get(struct pn_proactor_t* p) {
-  return proactor_do_epoll(p, false);
+//ZZZ  return proactor_do_epoll(p, false);
+  pn_event_batch_t *b  = proactor_do_epoll(p, false);
+  if (dbgz) fprintf(stderr, "zepggg %p\n", (void *) b);
+  return b;
 }
 
 // Call with no locks
@@ -3463,6 +3531,7 @@ void pn_proactor_disconnect(pn_proactor_t *p, pn_condition_t *cond) {
     ctx->disconnect_ops = 2;   // Second pass below and proactor_remove(), in any order.
     p->disconnects_pending++;
     ctx = ctx->next;
+    p->context_count--;
   }
   notify = wake_if_inactive(p);
   unlock(&p->context.mutex);
