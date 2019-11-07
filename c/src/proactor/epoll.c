@@ -124,9 +124,7 @@ static void pstrerror(int err, strerrorbuf msg) {
 // ========================================================================
 
 // In general all locks to be held singly and shortly (possibly as spin locks).
-// Exception: psockets+proactor for pn_proactor_disconnect (convention: acquire
-// psocket first to avoid deadlock).  TODO: revisit the exception and its
-// awkwardness in the code (additional mutex? different type?).
+// See above about lock ordering.
 
 typedef pthread_mutex_t pmutex;
 static void pmutex_init(pthread_mutex_t *pm){
@@ -624,7 +622,7 @@ static void pop_wake(pcontext_t *ctx) {
   // or to be scheduled.  wake() will not "see" any of the wake_next
   // pointers until wake_pending and working have transitioned to 0
   // and false, when a context stops working.
-
+  //
   // every context must transition as:
   //
   // !wake_pending .. wake() .. on wake_list .. on sched_wake_list .. working context .. !sched_wake && !wake_pending
