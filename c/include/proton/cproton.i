@@ -205,18 +205,6 @@ typedef unsigned long int uintptr_t;
   connection != NULL;
 }
 
-%contract pn_work_head(pn_connection_t *connection)
-{
- require:
-  connection != NULL;
-}
-
-%contract pn_work_next(pn_delivery_t *delivery)
-{
- require:
-  delivery != NULL;
-}
-
 %contract pn_session(pn_connection_t *connection)
 {
  require:

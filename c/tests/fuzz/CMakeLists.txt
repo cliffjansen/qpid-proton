@@ -76,16 +76,6 @@ target_link_libraries (fuzz-connection-driver ${FUZZING_QPID_PROTON_CORE_LIBRARY
 pn_add_fuzz_test (fuzz-message-decode fuzz-message-decode.c)
 target_link_libraries (fuzz-message-decode ${FUZZING_QPID_PROTON_CORE_LIBRARY})
 
-# pn_url_parse is not in proton core and is only used by messenger so compile specially
-pn_add_fuzz_test (fuzz-url
-  fuzz-url.c
-  ${PN_C_SOURCE_DIR}/extra/url.c
-  ${PN_C_SOURCE_DIR}/core/object/object.c
-  ${PN_C_SOURCE_DIR}/core/object/string.c
-  ${PN_C_SOURCE_DIR}/core/util.c
-  ${PN_C_SOURCE_DIR}/core/memory.c)
-target_compile_definitions(fuzz-url PRIVATE PROTON_DECLARE_STATIC)
-
 # This regression test can take a very long time so don't run by default
 if(HAS_PROACTOR AND FUZZ_LONG_TESTS)
   pn_add_fuzz_test (fuzz-proactor-receive fuzz-proactor-receive.c)

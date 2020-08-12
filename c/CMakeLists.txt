@@ -277,10 +277,6 @@ set (qpid-proton-extra
   src/handlers/iohandler.c
   src/handlers/flowcontroller.c
 
-  src/messenger/messenger.c
-  src/messenger/subscription.c
-  src/messenger/store.c
-  src/messenger/transform.c
   )
 
 set (qpid-proton-include
@@ -315,7 +311,6 @@ set (qpid-proton-include
 set (qpid-proton-include-extra
   include/proton/handlers.h
   include/proton/log.h
-  include/proton/messenger.h
   include/proton/reactor.h
   include/proton/selectable.h
   include/proton/url.h

@@ -236,8 +236,6 @@ struct pn_connection_t {
   pn_list_t *sessions;
   pn_list_t *freed;
   pn_transport_t *transport;
-  pn_delivery_t *work_head;
-  pn_delivery_t *work_tail;
   pn_delivery_t *tpwork_head;  // reference counted
   pn_delivery_t *tpwork_tail;
   pn_string_t *container;
@@ -333,8 +331,6 @@ struct pn_delivery_t {
   pn_buffer_t *tag;
   pn_delivery_t *unsettled_next;
   pn_delivery_t *unsettled_prev;
-  pn_delivery_t *work_next;
-  pn_delivery_t *work_prev;
   pn_delivery_t *tpwork_next;
   pn_delivery_t *tpwork_prev;
   pn_delivery_state_t state;
@@ -342,7 +338,6 @@ struct pn_delivery_t {
   pn_record_t *context;
   bool updated;
   bool settled; // tracks whether we're in the unsettled list or not
-  bool work;
   bool tpwork;
   bool done;
   bool referenced;
@@ -365,7 +360,6 @@ void pn_condition_tini(pn_condition_t *condition);
 void pn_modified(pn_connection_t *connection, pn_endpoint_t *endpoint, bool emit);
 void pn_real_settle(pn_delivery_t *delivery);  // will free delivery if link is freed
 void pn_clear_tpwork(pn_delivery_t *delivery);
-void pn_work_update(pn_connection_t *connection, pn_delivery_t *delivery);
 void pn_clear_modified(pn_connection_t *connection, pn_endpoint_t *endpoint);
 void pn_connection_bound(pn_connection_t *conn);
 void pn_connection_unbound(pn_connection_t *conn);

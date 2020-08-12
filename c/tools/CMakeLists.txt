@@ -19,18 +19,4 @@
 
 include_directories (${PN_C_INCLUDE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
-add_executable(msgr-recv msgr-recv.c msgr-common.c)
-add_executable(msgr-send msgr-send.c msgr-common.c)
-add_executable(reactor-recv reactor-recv.c msgr-common.c)
-add_executable(reactor-send reactor-send.c msgr-common.c)
 
-target_link_libraries(msgr-recv qpid-proton)
-target_link_libraries(msgr-send qpid-proton)
-target_link_libraries(reactor-recv qpid-proton)
-target_link_libraries(reactor-send qpid-proton)
-
-set_target_properties (
-  msgr-recv msgr-send reactor-recv reactor-send
-  PROPERTIES
-  COMPILE_FLAGS "${COMPILE_WARNING_FLAGS} ${C_STANDARD_FLAGS}"
-)

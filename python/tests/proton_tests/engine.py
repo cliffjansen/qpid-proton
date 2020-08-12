@@ -851,28 +851,6 @@ class TransferTest(Test):
     gc.collect()
     assert not gc.garbage
 
-  def test_work_queue(self):
-    assert self.c1.work_head is None
-    self.snd.delivery("tag")
-    assert self.c1.work_head is None
-    self.rcv.flow(1)
-    self.pump()
-    d = self.c1.work_head
-    assert d is not None
-    tag = d.tag
-    assert tag == "tag", tag
-    assert d.writable
-
-    n = self.snd.send(b"this is a test")
-    assert self.snd.advance()
-    assert self.c1.work_head is None
-
-    self.pump()
-
-    d = self.c2.work_head
-    assert d.tag == "tag"
-    assert d.readable
-
   def test_multiframe(self):
     self.rcv.flow(1)
     self.snd.delivery("tag")
@@ -969,98 +947,7 @@ class TransferTest(Test):
     assert sd.local_state == rd.remote_state == Delivery.ACCEPTED
     sd.settle()
 
-  def test_delivery_id_ordering(self):
-    self.rcv.flow(1024)
-    self.pump(buffer_size=64*1024)
-
-    #fill up delivery buffer on sender
-    for m in range(1024):
-      sd = self.snd.delivery("tag%s" % m)
-      msg = ("message %s" % m).encode('ascii')
-      n = self.snd.send(msg)
-      assert n == len(msg)
-      assert self.snd.advance()
-
-    self.pump(buffer_size=64*1024)
-
-    #receive a session-windows worth of messages and accept them
-    for m in range(1024):
-      rd = self.rcv.current
-      assert rd is not None, m
-      assert rd.tag == ("tag%s" % m), (rd.tag, m)
-      msg = self.rcv.recv(1024)
-      assert msg == ("message %s" % m).encode('ascii'), (msg, m)
-      rd.update(Delivery.ACCEPTED)
-      rd.settle()
-
-    self.pump(buffer_size=64*1024)
-
-    #add some new deliveries
-    for m in range(1024, 1450):
-      sd = self.snd.delivery("tag%s" % m)
-      msg = ("message %s" % m).encode('ascii')
-      n = self.snd.send(msg)
-      assert n == len(msg)
-      assert self.snd.advance()
-
-    #handle all disposition changes to sent messages
-    d = self.c1.work_head
-    while d:
-      next_d = d.work_next
-      if d.updated:
-        d.update(Delivery.ACCEPTED)
-        d.settle()
-      d = next_d
-
-    #submit some more deliveries
-    for m in range(1450, 1500):
-      sd = self.snd.delivery("tag%s" % m)
-      msg = ("message %s" % m).encode('ascii')
-      n = self.snd.send(msg)
-      assert n == len(msg)
-      assert self.snd.advance()
-
-    self.pump(buffer_size=64*1024)
-    self.rcv.flow(1024)
-    self.pump(buffer_size=64*1024)
-
-    #verify remaining messages can be received and accepted
-    for m in range(1024, 1500):
-      rd = self.rcv.current
-      assert rd is not None, m
-      assert rd.tag == ("tag%s" % m), (rd.tag, m)
-      msg = self.rcv.recv(1024)
-      assert msg == ("message %s" % m).encode('ascii'), (msg, m)
-      rd.update(Delivery.ACCEPTED)
-      rd.settle()
-
-  def test_cleanup(self):
-    self.rcv.flow(10)
-    self.pump()
-
-    for x in range(10):
-        self.snd.delivery("tag%d" % x)
-        msg = b"this is a test"
-        n = self.snd.send(msg)
-        assert n == len(msg)
-        assert self.snd.advance()
-    self.snd.close()
-    self.snd.free()
-    self.snd = None
-    gc.collect()
-
-    self.pump()
-
-    for x in range(10):
-        rd = self.rcv.current
-        assert rd is not None
-        assert rd.tag == "tag%d" % x
-        rmsg = self.rcv.recv(1024)
-        assert self.rcv.advance()
-        assert rmsg == msg
-        # close of snd should've settled:
-        assert rd.settled
-        rd.settle()
+#   def test_delivery_id_ordering(self):  ZZZ TODO replace without work_head
 
 class MaxFrameTransferTest(Test):
 

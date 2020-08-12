@@ -523,8 +523,6 @@ pn_connection_t *pn_connection()
   conn->sessions = pn_list(PN_WEAKREF, 0);
   conn->freed = pn_list(PN_WEAKREF, 0);
   conn->transport = NULL;
-  conn->work_head = NULL;
-  conn->work_tail = NULL;
   conn->tpwork_head = NULL;
   conn->tpwork_tail = NULL;
   conn->container = pn_string(NULL);
@@ -661,62 +659,6 @@ const char *pn_connection_remote_hostname(pn_connection_t *connection)
 {
   assert(connection);
   return connection->transport ? connection->transport->remote_hostname : NULL;
-}
-
-pn_delivery_t *pn_work_head(pn_connection_t *connection)
-{
-  assert(connection);
-  return connection->work_head;
-}
-
-pn_delivery_t *pn_work_next(pn_delivery_t *delivery)
-{
-  assert(delivery);
-
-  if (delivery->work)
-    return delivery->work_next;
-  else
-    return pn_work_head(delivery->link->session->connection);
-}
-
-static void pni_add_work(pn_connection_t *connection, pn_delivery_t *delivery)
-{
-  if (!delivery->work)
-  {
-    assert(!delivery->local.settled);   // never allow settled deliveries
-    LL_ADD(connection, work, delivery);
-    delivery->work = true;
-  }
-}
-
-static void pni_clear_work(pn_connection_t *connection, pn_delivery_t *delivery)
-{
-  if (delivery->work)
-  {
-    LL_REMOVE(connection, work, delivery);
-    delivery->work = false;
-  }
-}
-
-void pn_work_update(pn_connection_t *connection, pn_delivery_t *delivery)
-{
-  pn_link_t *link = pn_delivery_link(delivery);
-  pn_delivery_t *current = pn_link_current(link);
-  if (delivery->updated && !delivery->local.settled) {
-    pni_add_work(connection, delivery);
-  } else if (delivery == current) {
-    if (link->endpoint.type == SENDER) {
-      if (pn_link_credit(link) > 0) {
-        pni_add_work(connection, delivery);
-      } else {
-        pni_clear_work(connection, delivery);
-      }
-    } else {
-      pni_add_work(connection, delivery);
-    }
-  } else {
-    pni_clear_work(connection, delivery);
-  }
 }
 
 static void pni_add_tpwork(pn_delivery_t *delivery)
@@ -1543,9 +1485,6 @@ pn_delivery_t *pn_delivery(pn_link_t *link, pn_delivery_tag_t tag)
   delivery->settled = false;
   LL_ADD(link, unsettled, delivery);
   delivery->referenced = true;
-  delivery->work_next = NULL;
-  delivery->work_prev = NULL;
-  delivery->work = false;
   delivery->tpwork_next = NULL;
   delivery->tpwork_prev = NULL;
   delivery->tpwork = false;
@@ -1564,8 +1503,6 @@ pn_delivery_t *pn_delivery(pn_link_t *link, pn_delivery_tag_t tag)
     link->current = delivery;
 
   link->unsettled_count++;
-
-  pn_work_update(link->session->connection, delivery);
 
   // XXX: could just remove incref above
   pn_decref(delivery);
@@ -1624,11 +1561,10 @@ void pn_delivery_dump(pn_delivery_t *d)
   pn_bytes_t bytes = pn_buffer_bytes(d->tag);
   pn_quote_data(tag, 1024, bytes.start, bytes.size);
   printf("{tag=%s, local.type=%" PRIu64 ", remote.type=%" PRIu64 ", local.settled=%u, "
-         "remote.settled=%u, updated=%u, current=%u, writable=%u, readable=%u, "
-         "work=%u}",
+         "remote.settled=%u, updated=%u, current=%u, writable=%u, readable=%u}",
          tag, d->local.type, d->remote.type, d->local.settled,
          d->remote.settled, d->updated, pn_delivery_current(d),
-         pn_delivery_writable(d), pn_delivery_readable(d), d->work);
+         pn_delivery_writable(d), pn_delivery_readable(d));
 }
 
 void *pn_delivery_get_context(pn_delivery_t *delivery)
@@ -1781,8 +1717,6 @@ bool pn_link_advance(pn_link_t *link)
       pni_advance_receiver(link);
     }
     pn_delivery_t *next = link->current;
-    pn_work_update(link->session->connection, prev);
-    if (next) pn_work_update(link->session->connection, next);
     return prev != next;
   } else {
     return false;
@@ -1862,7 +1796,6 @@ void pn_delivery_settle(pn_delivery_t *delivery)
     link->unsettled_count--;
     delivery->local.settled = true;
     pni_add_tpwork(delivery);
-    pn_work_update(delivery->link->session->connection, delivery);
     pn_incref(delivery);
     pn_decref(delivery);
   }
@@ -2034,7 +1967,6 @@ bool pn_delivery_updated(pn_delivery_t *delivery)
 void pn_delivery_clear(pn_delivery_t *delivery)
 {
   delivery->updated = false;
-  pn_work_update(delivery->link->session->connection, delivery);
 }
 
 void pn_delivery_update(pn_delivery_t *delivery, uint64_t state)
