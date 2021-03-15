@@ -56,7 +56,7 @@ extern "C" {
    *
    * @note The intent of the offset is to allow the actual bytes being read/written to be at a variable
    * location relative to the head of the buffer because of other data or structures that are important to the application
-   * associated with the data to be written but not themselves read/written to the connection.
+   * associated with the data to be written but not themselves read/written to the raw datagram.
    *
    * @note For read buffers: When read buffers are returned to the application size will be the number of bytes read.
    * Read operations will not change the context, bytes or capacity members of the structure.
@@ -126,7 +126,7 @@ extern "C" {
    * a @ref PN_RAW_DATAGRAM_READ event.
    *
    * A @ref PN_RAW_DATAGRAM_NEED_READ_BUFFERS event will be generated immediately after
-   * the @ref PN_RAW_DATAGRAM_CONNECTED event if there are no read buffers. It will also be
+   * the @ref PN_RAW_DATAGRAM_OPENED event if there are no read buffers. It will also be
    * generated whenever the raw datagram runs out of read buffers. In both these cases the
    * event will not be generated again until @ref pn_raw_datagram_give_read_buffers is called.
    *
@@ -167,7 +167,7 @@ extern "C" {
    * until this point the buffers must not be accessed at all (written or even read).
    *
    * A @ref PN_RAW_DATAGRAM_NEED_WRITE_BUFFERS event will be generated immediately after
-   * the @ref PN_RAW_DATAGRAM_CONNECTED event if there are no write buffers. It will also be
+   * the @ref PN_RAW_DATAGRAM_OPENED event if there are no write buffers. It will also be
    * generated whenever the raw datagram finishes writing all the write buffers. In both these cases the
    * event will not be generated again until @ref pn_raw_datagram_write_buffers is called.
    *

@@ -364,25 +364,25 @@ PNP_EXTERN int64_t pn_proactor_now_64(void);
 PNP_EXTERN void pn_proactor_raw_connect(pn_proactor_t *proactor, pn_raw_connection_t *raw_connection, const char *addr);
 
 /**
- * Create a connectionless receiver bound to @p raw_connection.
+ * Create a connectionless sender/receiver bound to @p raw_datagram.
  *
- * Errors are returned as  @ref PN_RAW_CONNECTION_DISCONNECTED events by pn_proactor_wait().
+ * Errors are returned as  @ref PN_RAW_DATAGRAM_DISCONNECTED events by pn_proactor_wait().
  *
  * @note Thread-safe
  *
  * @param[in] proactor the proactor
  *
- * @param[in] raw_datagram the application must create a raw connection with pn_raw_datagram()
+ * @param[in] raw_datagram the application must create a raw datagram with pn_raw_datagram()
  * this parameter cannot be null.
  *
- * @p proactor *takes ownership* of @p raw_connection and will
- * automatically call pn_raw_connection_free() after the final @ref
- * PN_RAW_CONNECTION_DISCONNECTED event is handled, or when @ref pn_proactor_free() is
+ * @p proactor *takes ownership* of @p raw_datagram and will
+ * automatically free @p raw_datagram after the final @ref
+ * PN_RAW_DATAGRAM_DISCONNECTED event is handled, or when @ref pn_proactor_free() is
  * called.
  *
  * @param[in] addr the "host:port" network address, constructed by @ref pn_proactor_addr()
  * is the address that the datagram will listen on. Usually there will be an empty host, and the port will
- * specify the UDP port on which to listen. If no port is specified then the first datagram sent will come
+ * specify the UDP port on which to listen or send. If no port is specified then the first datagram sent will come
  * from an arbitrary port. This can be retrieved using @ref pn_raw_datagram_local_address()
  */
 PNP_EXTERN void pn_proactor_raw_datagram(pn_proactor_t *proactor, pn_raw_datagram_t *raw_datagram, const char *addr);
@@ -448,6 +448,13 @@ PNP_EXTERN void pn_proactor_raw_datagram(pn_proactor_t *proactor, pn_raw_datagra
  * @ref PN_RAW_CONNECTION_READ | @copybrief PN_RAW_CONNECTION_READ
  * @ref PN_RAW_CONNECTION_WRITTEN | @copybrief PN_RAW_CONNECTION_WRITTEN
  * @ref PN_RAW_CONNECTION_WAKE | @copybrief PN_RAW_CONNECTION_WAKE
+ * @ref PN_RAW_DATAGRAM_OPENED | @copybrief PN_RAW_DATAGRAM_OPENED
+ * @ref PN_RAW_DATAGRAM_CLOSED | @copybrief PN_RAW_DATAGRAM_CLOSED
+ * @ref PN_RAW_DATAGRAM_NEED_READ_BUFFERS | @copybrief PN_RAW_DATAGRAM_NEED_READ_BUFFERS
+ * @ref PN_RAW_DATAGRAM_NEED_WRITE_BUFFERS | @copybrief PN_RAW_DATAGRAM_NEED_WRITE_BUFFERS
+ * @ref PN_RAW_DATAGRAM_READ | @copybrief PN_RAW_DATAGRAM_READ
+ * @ref PN_RAW_DATAGRAM_WRITTEN | @copybrief PN_RAW_DATAGRAM_WRITTEN
+ * @ref PN_RAW_DATAGRAM_WAKE | @copybrief PN_RAW_CONNECTION_WAKE
  *
  * @}
  */
