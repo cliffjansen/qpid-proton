@@ -85,12 +85,10 @@ struct pn_tls_domain_t {
   bool allow_unsecured;
 };
 
-// Bold guess of medium size of data chunks to work with.
-// May evolve for different values for encrypt and decrypt,
-// or for best latency versus max throughput.  TBD.
-// Currently assume that feeding the BIO amounts between
-// JRSIZE and 2*JRSIZE is a reasonable tradeoff of memory
-// buffering and TLS max record size.
+// Our internal straggler buffer size.
+// TODO: make more robust or (better) switch to a model where the
+// TLS session takes ownership of output buffers until released
+// to application.  Stay tuned.
 #define JRSIZE    (4*1024)
 
 struct pn_tls_t {
@@ -114,14 +112,16 @@ struct pn_tls_t {
   uint32_t q4enc_size;
   uint32_t q4dec_capacity;
   uint32_t q4dec_size;
-  // BIO processed bytes available for extraction.
-  uint32_t bio_encrypted;
-  uint32_t bio_decrypted;
 
   bool ssl_shutdown;    // BIO_ssl_shutdown() called on socket.
   bool ssl_closed;      // shutdown complete, or SSL error
   bool read_blocked;    // SSL blocked until more network data is read
   bool write_blocked;   // SSL blocked until data is written to network
+  bool enc_rblocked;
+  bool enc_wblocked;
+  bool dec_rblocked;
+  bool dec_wblocked;
+  bool can_encrypt;
 
   char *subject;
   X509 *peer_certificate;
@@ -139,7 +139,7 @@ static void release_ssl_socket( pn_tls_t * );
 static X509 *get_peer_certificate(pn_tls_t *ssl);
 
 
-//ZZZ dump these wih log replacement
+//TODO: convenience for embedded existing logging. Replace ASAP.
 #define     PN_LEVEL_NONE      0
 #define     PN_LEVEL_CRITICAL  1
 #define     PN_LEVEL_ERROR     2
@@ -151,42 +151,32 @@ static X509 *get_peer_certificate(pn_tls_t *ssl);
 #define     PN_LEVEL_RAW       128
 #define     PN_LEVEL_ALL       65535
 
-
 static void ssl_log(void *v, int sev, const char *fmt, ...)
 {
-  //ZZZ
+#ifdef at_least_some_logging
+  va_list ap;
+  va_start(ap, fmt);
+  vfprintf(stderr, fmt, ap);
+  va_end(ap);
+#endif
 }
 
 static void ssl_log_flush(void *v, int sev)
 {
+  char buf[128];        // see "man ERR_error_string_n()"
+  unsigned long err = ERR_get_error();
+  while (err) {
+    ERR_error_string_n(err, buf, sizeof(buf));
+    ssl_log(v, sev, "%s", buf);
+    err = ERR_get_error();
+  }
 }
-
 // log an error and dump the SSL error stack
 static void ssl_log_error(const char *fmt, ...)
 {
 }
 
-#ifdef laterZZZ
-// unrecoverable SSL failure occurred, notify transport and generate error code.
-static int ssl_failed(pn_tls_t *ssl)
-{
-  SSL_set_shutdown(ssl->ssl, SSL_SENT_SHUTDOWN|SSL_RECEIVED_SHUTDOWN);
-  ssl->ssl_closed = true;
-  ssl->app_input_closed = ssl->app_output_closed = PN_EOS;
-  // fake a shutdown so the i/o processing code will close properly
-  SSL_set_shutdown(ssl->ssl, SSL_SENT_SHUTDOWN|SSL_RECEIVED_SHUTDOWN);
-  // try to grab the first SSL error to add to the failure log
-  char buf[256] = "Unknown error";
-  unsigned long ssl_err = ERR_get_error();
-  if (ssl_err) {
-    ERR_error_string_n( ssl_err, buf, sizeof(buf) );
-  }
-  ssl_log_flush(transport, PN_LEVEL_ERROR);    // spit out any remaining errors to the log file
-  pn_do_error(transport, "amqp:connection:framing-error", "SSL Failure: %s", buf);
-  return PN_EOS;
-}
-#endif
-
+// Next three not exported from Proton core.  Copied for now.
 static char *pni_strdup(const char *src)
 {
   if (!src) return NULL;
@@ -292,7 +282,7 @@ static int verify_callback(int preverify_ok, X509_STORE_CTX *ctx)
 
   pn_tls_t *ssl = (pn_tls_t *)SSL_get_ex_data(ssn, tls_ex_data_index);
   if (!ssl) {
-    //ZZZ ssl_log(transport, PN_LEVEL_ERROR, "Error: unexpected error - SSL context info not available for peer verify!");
+    // TODO: replace: ssl_log(transport, PN_LEVEL_ERROR, "Error: unexpected error - SSL context info not available for peer verify!");
     return 0;  // fail connection
   }
 
@@ -356,6 +346,7 @@ static int verify_callback(int preverify_ok, X509_STORE_CTX *ctx)
   } else {
     ssl_log(NULL, PN_LEVEL_TRACE, "Name from peer cert matched - peer is valid.");
   }
+
   return preverify_ok;
 }
 
@@ -451,26 +442,6 @@ static void ssn_restore(pn_tls_t *ssl) {
   }
 }
 
-#ifdef laterZZZ
-static void ssn_save(pn_tls_t *ssl) {
-  if (ssl->session_id) {
-    // Attach the session id to the session before we close the connection
-    // So that if we find it in the cache later we can figure out the session id
-    SSL_SESSION *session = SSL_get1_session( ssl->ssl );
-    if (session) {
-      ssl_log(NULL, PN_LEVEL_TRACE, "Saving SSL session as %s", ssl->session_id );
-      // If we're overwriting a value, need to free it
-      free(ssl_cache[ssl_cache_ptr].id);
-      if (ssl_cache[ssl_cache_ptr].session) SSL_SESSION_free(ssl_cache[ssl_cache_ptr].session);
-
-      char *id = pni_strdup( ssl->session_id );
-      ssl_cache_data s = {id, session};
-      ssl_cache[ssl_cache_ptr++] = s;
-      if (ssl_cache_ptr==SSL_CACHE_SIZE) ssl_cache_ptr = 0;
-    }
-  }
-}
-#endif
 
 /** Public API - visible to application code */
 
@@ -830,7 +801,7 @@ static int pni_tls_init(pn_tls_t *ssl, pn_tls_domain_t *domain, const char *sess
   if (session_id && domain->mode == PN_TLS_MODE_CLIENT)
     ssl->session_id = pni_strdup(session_id);
 
-  // ZZZ allow unsecured?
+  // TODO: confirm allow_unsecured is not necessary.
   // If SSL doesn't specifically allow skipping encryption, require SSL
   // TODO: This is a probably a stop-gap until allow_unsecured is removed
   //  if (!domain->allow_unsecured) transport->encryption_required = true;
@@ -859,7 +830,6 @@ pn_tls_t *pn_tls(pn_tls_domain_t *domain, const char* hostname, const char *sess
   }
 
   if (hostname && *hostname) {
-    // ZZZ hostname illegal if session_id?
     pn_tls_set_peer_hostname(tls, hostname);
   }
 
@@ -932,19 +902,6 @@ static int keyfile_pw_cb(char *buf, int size, int rwflag, void *userdata)
 }
 
 
-#ifdef laterZZZ
-static int start_ssl_shutdown(pn_tls_t *ssl)
-{
-  if (!ssl->ssl_shutdown) {
-    ssl_log(NULL, PN_LEVEL_TRACE, "Shutting down SSL connection...");
-    ssn_save(ssl);
-    ssl->ssl_shutdown = true;
-    BIO_ssl_shutdown( ssl->bio_ssl );
-  }
-  return 0;
-}
-#endif
-
 //////// SSL Connections
 
 
@@ -992,12 +949,23 @@ static int init_ssl_socket(pn_tls_t *ssl, pn_tls_domain_t *domain)
     SSL_set_accept_state(ssl->ssl);
     BIO_set_ssl_mode(ssl->bio_ssl, 0);  // server mode
     ssl_log( NULL, PN_LEVEL_TRACE, "Server SSL socket created." );
+    ssl->enc_rblocked = true;
+    ssl->dec_rblocked = true;
   } else {      // client mode
     SSL_set_connect_state(ssl->ssl);
     BIO_set_ssl_mode(ssl->bio_ssl, 1);  // client mode
     ssl_log( NULL, PN_LEVEL_TRACE, "Client SSL socket created." );
-    // track the client hello
-    ssl->bio_encrypted = BIO_ctrl_pending(ssl->bio_net_io);
+
+    // The following dummy IO action activates the BIO.
+    // Without it bio_net_io calls fail.  TODO: substitute for a more
+    // normal OpenSSL initialization.
+    char c;
+    int fakerc = BIO_read(ssl->bio_ssl, &c, 1);
+    if (fakerc != -1)
+      abort();
+
+    ssl->enc_rblocked = false;  // client hello starts the whole process
+    ssl->dec_rblocked = true;
   }
   ssl->subject = NULL;
   ssl->peer_certificate = NULL;
@@ -1019,8 +987,6 @@ static void release_ssl_socket(pn_tls_t *ssl)
   ssl->ssl = NULL;
 }
 
-
-
 pn_tls_resume_status_t pn_tls_resume_status(pn_tls_t *ssl)
 {
   if (!ssl || !ssl->ssl) return PN_TLS_RESUME_UNKNOWN;
@@ -1031,7 +997,6 @@ pn_tls_resume_status_t pn_tls_resume_status(pn_tls_t *ssl)
   }
   return PN_TLS_RESUME_UNKNOWN;
 }
-
 
 int pn_tls_set_peer_hostname(pn_tls_t *ssl, const char *hostname)
 {
@@ -1218,18 +1183,21 @@ const char* pn_tls_get_remote_subject_subfield(pn_tls_t *ssl, pn_tls_cert_subjec
   return NULL;
 }
 
-
-size_t pn_tls_encrypted_pending(pn_tls_t *ssl)
+bool pn_tls_encrypted_pending(pn_tls_t *ssl)
 {
-  if (ssl && ssl->bio_net_io)
-    return BIO_ctrl_pending(ssl->bio_net_io);
+  if (ssl) {
+    if (ssl->bio_net_io)
+      return !ssl->enc_rblocked;
+  }
   return 0;
 }
 
-size_t pn_tls_decrypted_pending(pn_tls_t *ssl)
+bool pn_tls_decrypted_pending(pn_tls_t *ssl)
 {
-  if (ssl && ssl->bio_ssl)
-    return BIO_ctrl_pending(ssl->bio_ssl);
+  if (ssl) {
+    if (ssl->bio_ssl)
+      return !ssl->dec_rblocked;
+  }
   return 0;
 }
 
@@ -1244,13 +1212,17 @@ static inline size_t size_min(uint32_t a, uint32_t b) {
 }
 
 ssize_t pn_tls_encrypt(pn_tls_t *tls, pn_raw_buffer_t const *unencrypted_buffers_in, size_t in_count, pn_raw_buffer_t *encrypted_destination_bufs, size_t dest_count, size_t *dest_written) {
+  bool shutdown_input = false;  // TODO: missing close() call?
   size_t inbufs_processed = 0;
   size_t outbufs_processed = 0;
   bool input_read = false;
   if (!tls || !dest_count) return 0;
   pn_raw_buffer_t *inbufp;
   pn_raw_buffer_t inbuf;
+
+  // Determine our "first" input buffer.
   if (tls->q4enc_size) {
+    // Straggler bytes not processed but saved in previous call.
     inbufp = &inbuf;
     inbufp->bytes = tls->q4enc_bytes;
     inbufp->size = inbufp->capacity = tls->q4enc_size;
@@ -1261,42 +1233,20 @@ ssize_t pn_tls_encrypt(pn_tls_t *tls, pn_raw_buffer_t const *unencrypted_buffers
   } else {
     inbufp = &inbuf;
     inbuf = unencrypted_buffers_in[0];
-    in_count--;
   }
   pn_raw_buffer_t *outbufp = dest_count ? &encrypted_destination_bufs[0] : NULL;
   bool outbuf_written = false;
 
   while (true) {
-    // Extract encrypted data from BIO
-    // bio_encrypted set for client on init?
-    if (tls->bio_encrypted) {
-      size_t n = size_min(tls->bio_encrypted, room(outbufp));
-      if (n) {
-        int rcount = BIO_read(tls->bio_net_io, outbufp->bytes + outbufp->offset + outbufp->size, n);
-        if (rcount > 0) {
-          outbufp->size += rcount;
-          if (!outbuf_written) {
-            outbuf_written = true;
-            outbufs_processed++;
-          }
-          if (room(outbufp) == 0) {
-            if (--dest_count) {
-              outbufp++;
-              outbuf_written = false;
-            }
-            else
-              outbufp = NULL; // No more output buffers
-          }
-        }
-      }
-    }
-    
     // Insert unencrypted data into BIO
-    if (inbufp) {
-      size_t n = size_min(inbufp->size, JRSIZE);
+    while (inbufp && !tls->enc_wblocked) {
+      size_t n = inbufp->size;
       if (n) {
         int wcount = BIO_write(tls->bio_ssl, inbufp->bytes + inbufp->offset, n);
+        if (wcount < (int) n)
+          tls->enc_wblocked = true;
         if (wcount > 0) {
+          tls->enc_rblocked = false;
           inbufp->offset += wcount;
           inbufp->size -= wcount;
           if (!input_read) {
@@ -1311,13 +1261,58 @@ ssize_t pn_tls_encrypt(pn_tls_t *tls, pn_raw_buffer_t const *unencrypted_buffers
             else
               inbufp = NULL;
           }
+
+        } else if (shutdown_input) {
+          ssl_log( NULL, PN_LEVEL_TRACE, "shutting down BIO write side");
+          (void)BIO_shutdown_wr( tls->bio_net_io );
+          shutdown_input = false;
         }
       }
     }
 
-    tls->bio_encrypted = BIO_ctrl_pending(tls->bio_net_io);
+    // Extract encrypted data from BIO
+    while (outbufp && !tls->enc_rblocked) {
+      size_t n = room(outbufp);
+      if (n) {
+        int rcount = BIO_read(tls->bio_net_io, outbufp->bytes + outbufp->offset + outbufp->size, n);
+        if (rcount < (int) n)
+          tls->enc_rblocked = true;
+        if (rcount > 0) {
+          tls->write_blocked = false;
+          tls->enc_wblocked = false;
+          outbufp->size += rcount;
+          if (!outbuf_written) {
+            outbuf_written = true;
+            outbufs_processed++;
+          }
+          if (room(outbufp) == 0) {
+            if (--dest_count) {
+              outbufp++;
+              outbuf_written = false;
+            }
+            else
+              outbufp = NULL; // No more output buffers
+          }
+        } else if (!BIO_should_retry(tls->bio_ssl)) {
+          int reason = SSL_get_error( tls->ssl, rcount );
+          switch (reason) {
+          case SSL_ERROR_ZERO_RETURN:
+            // SSL closed cleanly
+            ssl_log(NULL, PN_LEVEL_TRACE, "SSL connection has closed");
+            // TODO: replacement for:       start_ssl_shutdown(transport);  // KAG: not sure - this may not be necessary
+            tls->ssl_closed = true;
+            break;
+          default:
+            // unexpected error
+            // TODO: proper error communication to app layer and shutdown
+            abort();
+          }
+        }        
+      }
+    }
+    
     // Done if outbufs exhausted or all inbufs decrypted
-    if (!outbufp || (!inbufp && !tls->bio_encrypted))
+    if (!outbufp || tls->enc_rblocked)
       break;
   }
 
@@ -1340,9 +1335,12 @@ ssize_t pn_tls_decrypt(pn_tls_t *tls, pn_raw_buffer_t const *encrypted_buffers_i
   size_t inbufs_processed = 0;
   size_t outbufs_processed = 0;
   bool input_read = false;
-  if (!tls || !dest_count) return 0;
+  if (!tls || !dest_count)
+    return 0;
   pn_raw_buffer_t *inbufp;
   pn_raw_buffer_t inbuf;
+
+  // Select first buffer to process.
   if (tls->q4dec_size) {
     inbufp = &inbuf;
     inbufp->bytes = tls->q4dec_bytes;
@@ -1360,35 +1358,17 @@ ssize_t pn_tls_decrypt(pn_tls_t *tls, pn_raw_buffer_t const *encrypted_buffers_i
   bool outbuf_written = false;
 
   while (true) {
-    // Extract decrypted data from BIO
-    if (tls->bio_decrypted) {
-      size_t n = size_min(tls->bio_decrypted, room(outbufp));
-      if (n) {
-        int rcount = BIO_read(tls->bio_ssl, outbufp->bytes + outbufp->offset + outbufp->size, n);
-        if (rcount > 0) {
-          outbufp->size += rcount;
-          if (!outbuf_written) {
-            outbuf_written = true;
-            outbufs_processed++;
-          }
-          if (room(outbufp) == 0) {
-            if (--dest_count) {
-              outbufp++;
-              outbuf_written = false;
-            }
-            else
-              outbufp = NULL; // No more output buffers
-          }
-        }
-      }
-    }
-    
-    // Insert encrypted data into BIO
-    if (inbufp) {
-      size_t n = size_min(inbufp->size, JRSIZE);
+
+    // Insert encrypted data into ssl filter chain
+    while (inbufp && !tls->dec_wblocked) {
+      size_t n = inbufp->size;
       if (n) {
         int wcount = BIO_write(tls->bio_net_io, inbufp->bytes + inbufp->offset, n);
+        if (wcount < (int) n)
+          tls->dec_wblocked = true;
         if (wcount > 0) {
+          tls->dec_rblocked = false;
+          tls->enc_rblocked = false;
           inbufp->offset += wcount;
           inbufp->size -= wcount;
           if (!input_read) {
@@ -1407,9 +1387,53 @@ ssize_t pn_tls_decrypt(pn_tls_t *tls, pn_raw_buffer_t const *encrypted_buffers_i
       }
     }
 
-    tls->bio_decrypted = BIO_ctrl_pending(tls->bio_ssl);
+    // Extract decrypted data from ssl filter chain
+    while (outbufp && !tls->dec_rblocked) {
+      size_t n = room(outbufp);
+      if (n) {
+        int rcount = BIO_read(tls->bio_ssl, outbufp->bytes + outbufp->offset + outbufp->size, n);
+        if (rcount > 0) {
+          tls->dec_wblocked = false;
+          outbufp->size += rcount;
+          if (!outbuf_written) {
+            outbuf_written = true;
+            outbufs_processed++;
+          }
+          if (room(outbufp) == 0) {
+            if (--dest_count) {
+              outbufp++;
+              outbuf_written = false;
+            }
+            else
+              outbufp = NULL; // No more output buffers
+          }
+        } else {
+          if (!BIO_should_retry(tls->bio_ssl)) {
+            int reason = SSL_get_error( tls->ssl, rcount );
+            switch (reason) {
+            case SSL_ERROR_ZERO_RETURN:
+              // SSL closed cleanly
+              ssl_log(NULL, PN_LEVEL_TRACE, "SSL connection has closed");
+              tls->ssl_closed = true;
+              break;
+            default:
+              // TODO: communicate error and shutdown.
+              // unexpected error
+              // ssl_failed(transport);
+              ERR_print_errors_fp(stderr);
+              ssl_log_flush(NULL, 1);
+              abort();
+            }
+          } else {
+            if (rcount == -1 && BIO_should_read(tls->bio_ssl))
+              tls->dec_rblocked = true;
+          }
+        }
+      }
+    }
+    
     // Done if outbufs exhausted or all inbufs decrypted
-    if (!outbufp || (!inbufp && !tls->bio_decrypted))
+    if (!outbufp || tls->dec_rblocked)
       break;
   }
 
@@ -1425,7 +1449,14 @@ ssize_t pn_tls_decrypt(pn_tls_t *tls, pn_raw_buffer_t const *encrypted_buffers_i
   }
 
   *dest_written = outbufs_processed;
+  if (!tls->can_encrypt && SSL_do_handshake(tls->ssl) == 1)
+    tls->can_encrypt = true;
   return inbufs_processed;
+}
+
+
+bool pn_tls_can_encrypt(pn_tls_t * tls) {
+  return tls->can_encrypt;
 }
 
 
@@ -1481,7 +1512,7 @@ static void initialize(void) {
   SSL_library_init();
   SSL_load_error_strings();
   OpenSSL_add_all_algorithms();
-  tls_ex_data_index = SSL_get_ex_new_index( 0, (void *) "org.apache.qpid.proton.ssl",
+  tls_ex_data_index = SSL_get_ex_new_index( 0, (void *) "org.apache.qpid.proton.tls",
                                             NULL, NULL, NULL);
   ssn_init();
   locks = (pni_mutex_t*)malloc(CRYPTO_num_locks() * sizeof(pni_mutex_t));
@@ -1501,7 +1532,6 @@ static void initialize(void) {
    final shut-down call. If it did, we should call this: */
 /*
 static void shutdown(void) {
-ZZZ opportunity here.
   CRYPTO_set_id_callback(NULL);
   CRYPTO_set_locking_callback(NULL);
   if(locks)  {

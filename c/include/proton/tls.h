@@ -446,8 +446,8 @@ PN_TLS_EXTERN int pn_tls_get_cert_fingerprint(pn_tls_t *tls0,
  */
 PN_TLS_EXTERN const char* pn_tls_get_remote_subject_subfield(pn_tls_t *tls, pn_tls_cert_subject_subfield field);
 
-PN_TLS_EXTERN size_t pn_tls_encrypted_pending(pn_tls_t *tls);
-PN_TLS_EXTERN size_t pn_tls_decrypted_pending(pn_tls_t *tls);
+PN_TLS_EXTERN bool pn_tls_encrypted_pending(pn_tls_t *tls);
+PN_TLS_EXTERN bool pn_tls_decrypted_pending(pn_tls_t *tls);
 
 
 // return number of input buffers processed and encrypted buffers produced.  -1 if error.
@@ -458,6 +458,9 @@ PN_TLS_EXTERN ssize_t pn_tls_encrypt(pn_tls_t *tls, pn_raw_buffer_t const *unenc
 
 // return number of input buffers processed and decrypted buffers produced.  -1 if error.
 PN_TLS_EXTERN ssize_t pn_tls_decrypt(pn_tls_t *tls, pn_raw_buffer_t const *encrypted_buffers_in, size_t in_count, pn_raw_buffer_t *decrypted_destination_bufs, size_t dest_count, size_t *dest_written);
+
+// True if peers have negotiated a TLS session.  False indicates handshake in progress.
+PN_TLS_EXTERN bool pn_tls_can_encrypt(pn_tls_t *tls);
 
 /**
  * @}

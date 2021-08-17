@@ -28,6 +28,8 @@
 #include <unistd.h>
 #include <errno.h>
 #endif
+// ZZZ strlen only
+#include <cstring>
 
 using namespace pn_test;
 using Catch::Matchers::Contains;
@@ -75,11 +77,16 @@ TEST_CASE("plain old fubar") {
   REQUIRE(pn_tls_domain_set_peer_authentication(client_domain, PN_TLS_VERIFY_PEER, NULL) == 0);
 
 
-  pn_tls_t *cli_tls = pn_tls(client_domain, NULL, NULL);
-  CHECK(cli_tls == NULL); // No default domain configuration
+  pn_tls_t *cli_tls = pn_tls(client_domain, "test_server", NULL);
   pn_tls_t *srv_tls = pn_tls(server_domain, NULL, NULL);
-  CHECK(srv_tls == NULL); // No default domain configuration for server either
 
+  FILE *fp=fopen("/tmp/cjzzz", "a");
+  fprintf(fp, "init foo %d %d\n", (int) pn_tls_encrypted_pending(cli_tls), (int) pn_tls_encrypted_pending(srv_tls));
+  fprintf(fp, "init bar %d %d\n", (int) pn_tls_decrypted_pending(cli_tls), (int) pn_tls_decrypted_pending(srv_tls));
+  fflush(fp);
+  CAPTURE((int) pn_tls_encrypted_pending(cli_tls), (int) pn_tls_encrypted_pending(srv_tls));
+  INFO("can never leave " << pn_tls_decrypted_pending(cli_tls));
+  CHECK(false);
   pn_tls_free(cli_tls);
   pn_tls_free(srv_tls);
   pn_tls_domain_free(client_domain);
