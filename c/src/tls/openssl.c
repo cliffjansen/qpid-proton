@@ -56,8 +56,45 @@
 /** @file
  * Standalone raw buffer based SSL/TLS support API.
  *
- * This file is heavily based on the original Proton SSL layer for AMQP connections.
+ * This file is heavily based on the original Proton SSL layer for
+ * AMQP connections and the buffer management logic in
+ * raw_connection.c.
  */
+
+enum {
+  result_buffer_count = 4,
+  decrypt_buffer_count = 4,
+  encrypt_buffer_count = 4
+};
+
+typedef enum {
+  buff_empty    = 0,
+
+  buff_decrypt_pending    = 1, // application buffers for decryption
+  buff_decrypt_done       = 2,
+
+  buff_encrypt_pending    = 3, // application buffers for encryption
+  buff_encrypt_done       = 4,
+
+  buff_result_blank       = 5, // result buffers for encrypted/decrypted data
+  buff_result_encrypted   = 6,
+  buff_result_decrypted   = 7
+} buff_type;
+
+
+typedef uint16_t buff_ptr; // This is always the index+1 so that 0 can be special
+
+typedef struct pbuffer_t {
+  uintptr_t context;
+  char *bytes;
+  uint32_t capacity;
+  uint32_t size;
+  uint32_t offset;
+  buff_ptr next;
+  uint8_t type; // For debugging
+} pbuffer_t;
+
+
 
 typedef struct pn_tls_session_t pn_tls_session_t;
 
@@ -92,6 +129,38 @@ struct pn_tls_domain_t {
 #define JRSIZE    (4*1024)
 
 struct pn_tls_t {
+  pbuffer_t result_buffers[result_buffer_count];
+  pbuffer_t encrypt_buffers[encrypt_buffer_count];
+  pbuffer_t decrypt_buffers[decrypt_buffer_count];
+
+  uint16_t encrypt_buffer_empty_count;
+  uint16_t decrypt_buffer_empty_count;
+  uint16_t result_buffer_encrypted_count;
+  uint16_t result_buffer_decrypted_count;
+  uint16_t result_buffer_empty_count;
+
+  buff_ptr result_first_empty;
+  buff_ptr result_first_blank;   // blanks are unordered, just like empty slots
+  buff_ptr result_first_encrypted;
+  buff_ptr result_last_encrypted;
+  buff_ptr result_first_decrypted;
+  buff_ptr result_last_decrypted;
+
+  buff_ptr encrypt_first_empty;
+  buff_ptr encrypt_first_pending;
+  buff_ptr encrypt_last_pending;
+  buff_ptr encrypt_first_done;
+  buff_ptr encrypt_last_done;
+
+  buff_ptr decrypt_first_empty;
+  buff_ptr decrypt_first_pending;
+  buff_ptr decrypt_last_pending;
+  buff_ptr decrypt_first_done;
+  buff_ptr decrypt_last_done;
+
+  uint32_t encrypt_pending_offset;  // if set, points to remaining bytes to consume in working buffer.
+  uint32_t decrypt_pending_offset;
+
   pn_tls_mode_t mode;
   pn_tls_verify_mode_t verify_mode;
   const char    *session_id;
@@ -126,6 +195,58 @@ struct pn_tls_t {
   char *subject;
   X509 *peer_certificate;
 };
+
+static void encrypt(pn_tls_t *);
+static void decrypt(pn_tls_t *);
+
+static void tls_initialize_buffers(pn_tls_t *tls) {
+  // Link together free lists
+  for (buff_ptr i = 1; i<=encrypt_buffer_count; i++) {
+    tls->encrypt_buffers[i-1].next = i==encrypt_buffer_count ? 0 : i+1;
+    tls->encrypt_buffers[i-1].type = buff_empty;
+    tls->decrypt_buffers[i-1].next = i==decrypt_buffer_count ? 0 : i+1;
+    tls->decrypt_buffers[i-1].type = buff_empty;
+  }
+
+  for (buff_ptr i = 1; i<=result_buffer_count; i++) {
+    tls->result_buffers[i-1].next = i==result_buffer_count ? 0 : i+1;
+    tls->result_buffers[i-1].type = buff_empty;
+  }
+
+  tls->encrypt_buffer_empty_count = encrypt_buffer_count;
+  tls->decrypt_buffer_empty_count = decrypt_buffer_count;
+  tls->result_buffer_empty_count = result_buffer_count;
+
+  tls->result_first_empty = 1;
+  tls->encrypt_first_empty = 1;
+  tls->decrypt_first_empty = 1;
+}
+
+size_t pn_tls_encrypt_buffers_capacity(pn_tls_t *tls) { return tls->encrypt_buffer_empty_count; }
+size_t pn_tls_decrypt_buffers_capacity(pn_tls_t *tls) { return tls->decrypt_buffer_empty_count; }
+size_t pn_tls_result_buffers_capacity(pn_tls_t *tls) { return tls->result_buffer_empty_count; }
+
+size_t pn_tls_decrypted_result_count(pn_tls_t *tls) {
+  decrypt(tls);
+  return tls->result_buffer_decrypted_count;
+}
+
+size_t pn_tls_encrypted_result_count(pn_tls_t *tls) {
+  encrypt(tls);
+  return tls->result_buffer_encrypted_count;
+}
+
+
+uint32_t pn_tls_last_decrypted_buffer_size(pn_tls_t *tls) {
+  decrypt(tls);
+  return tls->result_last_decrypted ? tls->result_buffers[tls->result_last_decrypted-1].size : 0;
+}
+
+uint32_t pn_tls_last_encrypted_buffer_size(pn_tls_t *tls) {
+  encrypt(tls);
+  return tls->result_last_encrypted ? tls->result_buffers[tls->result_last_encrypted-1].size : 0;
+}
+
 
 // define two sets of allowable ciphers: those that require authentication, and those
 // that do not require authentication (anonymous).  See ciphers(1).
@@ -806,6 +927,7 @@ static int pni_tls_init(pn_tls_t *ssl, pn_tls_domain_t *domain, const char *sess
   // TODO: This is a probably a stop-gap until allow_unsecured is removed
   //  if (!domain->allow_unsecured) transport->encryption_required = true;
 
+  tls_initialize_buffers(ssl);
   return init_ssl_socket(ssl, domain);
 }
 
@@ -1201,9 +1323,16 @@ bool pn_tls_decrypted_pending(pn_tls_t *ssl)
   return 0;
 }
 
-static inline uint32_t room(pn_raw_buffer_t const *rb) {
+static inline uint32_t room_v1(pn_raw_buffer_t const *rb) {
+  //ZZZ confirm V1 obsoleted.
   if (rb)
     return rb->capacity - (rb->offset + rb->size);
+  return 0;
+}
+
+static inline uint32_t room(pbuffer_t const *b) {
+  if (b)
+    return b->capacity - (b->offset + b->size);
   return 0;
 }
 
@@ -1211,7 +1340,7 @@ static inline size_t size_min(uint32_t a, uint32_t b) {
   return (a <= b) ? a : b;
 }
 
-ssize_t pn_tls_encrypt(pn_tls_t *tls, pn_raw_buffer_t const *unencrypted_buffers_in, size_t in_count, pn_raw_buffer_t *encrypted_destination_bufs, size_t dest_count, size_t *dest_written) {
+ssize_t pn_tls_encrypt_v1(pn_tls_t *tls, pn_raw_buffer_t const *unencrypted_buffers_in, size_t in_count, pn_raw_buffer_t *encrypted_destination_bufs, size_t dest_count, size_t *dest_written) {
   bool shutdown_input = false;  // TODO: missing close() call?
   size_t inbufs_processed = 0;
   size_t outbufs_processed = 0;
@@ -1272,7 +1401,7 @@ ssize_t pn_tls_encrypt(pn_tls_t *tls, pn_raw_buffer_t const *unencrypted_buffers
 
     // Extract encrypted data from BIO
     while (outbufp && !tls->enc_rblocked) {
-      size_t n = room(outbufp);
+      size_t n = room_v1(outbufp);
       if (n) {
         int rcount = BIO_read(tls->bio_net_io, outbufp->bytes + outbufp->offset + outbufp->size, n);
         if (rcount < (int) n)
@@ -1285,7 +1414,7 @@ ssize_t pn_tls_encrypt(pn_tls_t *tls, pn_raw_buffer_t const *unencrypted_buffers
             outbuf_written = true;
             outbufs_processed++;
           }
-          if (room(outbufp) == 0) {
+          if (room_v1(outbufp) == 0) {
             if (--dest_count) {
               outbufp++;
               outbuf_written = false;
@@ -1331,7 +1460,7 @@ ssize_t pn_tls_encrypt(pn_tls_t *tls, pn_raw_buffer_t const *unencrypted_buffers
   return inbufs_processed;
 }
 
-ssize_t pn_tls_decrypt(pn_tls_t *tls, pn_raw_buffer_t const *encrypted_buffers_in, size_t in_count, pn_raw_buffer_t *decrypted_destination_bufs, size_t dest_count, size_t *dest_written) {
+ssize_t pn_tls_decrypt_v1(pn_tls_t *tls, pn_raw_buffer_t const *encrypted_buffers_in, size_t in_count, pn_raw_buffer_t *decrypted_destination_bufs, size_t dest_count, size_t *dest_written) {
   size_t inbufs_processed = 0;
   size_t outbufs_processed = 0;
   bool input_read = false;
@@ -1389,7 +1518,7 @@ ssize_t pn_tls_decrypt(pn_tls_t *tls, pn_raw_buffer_t const *encrypted_buffers_i
 
     // Extract decrypted data from ssl filter chain
     while (outbufp && !tls->dec_rblocked) {
-      size_t n = room(outbufp);
+      size_t n = room_v1(outbufp);
       if (n) {
         int rcount = BIO_read(tls->bio_ssl, outbufp->bytes + outbufp->offset + outbufp->size, n);
         if (rcount > 0) {
@@ -1399,7 +1528,7 @@ ssize_t pn_tls_decrypt(pn_tls_t *tls, pn_raw_buffer_t const *encrypted_buffers_i
             outbuf_written = true;
             outbufs_processed++;
           }
-          if (room(outbufp) == 0) {
+          if (room_v1(outbufp) == 0) {
             if (--dest_count) {
               outbufp++;
               outbuf_written = false;
@@ -1543,3 +1672,496 @@ static void shutdown(void) {
   }
 }
 */
+
+static void raw_buffer_to_pbuffer(pn_raw_buffer_t const* rbuf, pbuffer_t *pbuf, buff_type type) {
+  pbuf->context = rbuf->context;
+  pbuf->bytes = rbuf->bytes;
+  pbuf->capacity = rbuf->capacity;
+  pbuf->size = rbuf->size;
+  pbuf->offset = rbuf->offset;
+  pbuf->type = type;
+}
+
+static void pbuffer_to_raw_buffer(pbuffer_t *pbuf, pn_raw_buffer_t *rbuf) {
+  rbuf->context = pbuf->context;
+  rbuf->bytes = pbuf->bytes;
+  rbuf->capacity = pbuf->capacity;
+  rbuf->size = pbuf->size;
+  rbuf->offset = pbuf->offset;
+}
+
+
+size_t pn_tls_encrypt(pn_tls_t* tls, pn_raw_buffer_t const* bufs, size_t count_bufs) {
+  assert(tls);
+
+  size_t can_take = pn_min(count_bufs, pn_tls_encrypt_buffers_capacity(tls));
+  if ( can_take==0 ) return 0;
+
+  buff_ptr current = tls->encrypt_first_empty;
+  assert(current);
+
+  buff_ptr previous;
+  for (size_t i = 0; i < can_take; i++) {
+    // Get next free
+    assert(tls->encrypt_buffers[current-1].type == buff_empty);
+    raw_buffer_to_pbuffer(bufs + i, &tls->encrypt_buffers[current-1], buff_encrypt_pending);
+    previous = current;
+    current = tls->encrypt_buffers[current-1].next;
+  }
+
+  if (!tls->encrypt_first_pending) {
+    tls->encrypt_first_pending = tls->encrypt_first_empty;
+  }
+  if (tls->encrypt_last_pending) {
+    tls->encrypt_buffers[tls->encrypt_last_pending-1].next = tls->encrypt_first_empty;
+  }
+
+  tls->encrypt_last_pending = previous;
+  tls->encrypt_buffers[previous-1].next = 0;
+  tls->encrypt_first_empty = current;
+
+  tls->encrypt_buffer_empty_count -= can_take;
+  encrypt(tls); // Try to encrypt the inbound buffers.
+  return can_take;
+}
+
+size_t pn_tls_decrypt(pn_tls_t* tls, pn_raw_buffer_t const* bufs, size_t count_bufs) {
+  assert(tls);
+
+  size_t can_take = pn_min(count_bufs, pn_tls_decrypt_buffers_capacity(tls));
+  if ( can_take==0 ) return 0;
+
+  buff_ptr current = tls->decrypt_first_empty;
+  assert(current);
+
+  buff_ptr previous;
+  for (size_t i = 0; i < can_take; i++) {
+    // Get next free
+    assert(tls->decrypt_buffers[current-1].type == buff_empty);
+    raw_buffer_to_pbuffer(bufs + i, &tls->decrypt_buffers[current-1], buff_decrypt_pending);
+    previous = current;
+    current = tls->decrypt_buffers[current-1].next;
+  }
+
+  if (!tls->decrypt_first_pending) {
+    tls->decrypt_first_pending = tls->decrypt_first_empty;
+  }
+  if (tls->decrypt_last_pending) {
+    tls->decrypt_buffers[tls->decrypt_last_pending-1].next = tls->decrypt_first_empty;
+  }
+
+  tls->decrypt_last_pending = previous;
+  tls->decrypt_buffers[previous-1].next = 0;
+  tls->decrypt_first_empty = current;
+
+  tls->decrypt_buffer_empty_count -= can_take;
+  decrypt(tls);
+  return can_take;
+}
+
+size_t pn_tls_give_result_buffers(pn_tls_t* tls, pn_raw_buffer_t const* bufs, size_t count_bufs) {
+  assert(tls);
+
+  size_t can_take = pn_min(count_bufs, pn_tls_result_buffers_capacity(tls));
+  if ( can_take==0 ) return 0;
+
+  buff_ptr current = tls->result_first_empty;
+  assert(current);
+
+  buff_ptr previous;
+  for (size_t i = 0; i < can_take; i++) {
+    // Get next free
+    assert(tls->result_buffers[current-1].type == buff_empty);
+    raw_buffer_to_pbuffer(bufs + i, &tls->result_buffers[current-1], buff_result_blank);
+    previous = current;
+    current = tls->result_buffers[current-1].next;
+  }
+
+  if (!tls->result_first_blank) {
+    tls->result_first_blank = tls->result_first_empty;
+  }
+
+  tls->result_buffers[previous-1].next = 0;
+  tls->result_first_empty = current;
+
+  tls->result_buffer_empty_count -= can_take;
+  return can_take;
+}
+
+size_t pn_tls_take_decrypt_buffers(pn_tls_t *tls, pn_raw_buffer_t *buffers, size_t num) {
+  assert(tls);
+  size_t count = 0;
+
+  decrypt(tls);
+  buff_ptr current = tls->decrypt_first_done;
+  if (!current) return 0;
+
+  buff_ptr previous;
+  for (; current && count < num; count++) {
+    assert(tls->decrypt_buffers[current-1].type == buff_decrypt_done);
+    pbuffer_to_raw_buffer(&tls->decrypt_buffers[current-1], buffers + count);
+    tls->decrypt_buffers[current-1].type = buff_empty;
+
+    previous = current;
+    current = tls->decrypt_buffers[current-1].next;
+  }
+  if (!count) return 0;
+
+  tls->decrypt_buffers[previous-1].next = tls->decrypt_first_empty;
+  tls->decrypt_first_empty = tls->decrypt_first_done;
+
+  tls->decrypt_first_done = current;
+  if (!current) {
+    tls->decrypt_last_done = 0;
+  }
+  tls->decrypt_buffer_empty_count += count;
+  return count;
+}
+
+size_t pn_tls_take_encrypt_buffers(pn_tls_t *tls, pn_raw_buffer_t *buffers, size_t num) {
+  assert(tls);
+  size_t count = 0;
+
+  encrypt(tls);
+  buff_ptr current = tls->encrypt_first_done;
+  if (!current) return 0;
+
+  buff_ptr previous;
+  for (; current && count < num; count++) {
+    assert(tls->encrypt_buffers[current-1].type == buff_encrypt_done);
+    pbuffer_to_raw_buffer(&tls->encrypt_buffers[current-1], buffers + count);
+    tls->encrypt_buffers[current-1].type = buff_empty;
+
+    previous = current;
+    current = tls->encrypt_buffers[current-1].next;
+  }
+  if (!count) return 0;
+
+  tls->encrypt_buffers[previous-1].next = tls->encrypt_first_empty;
+  tls->encrypt_first_empty = tls->encrypt_first_done;
+
+  tls->encrypt_first_done = current;
+  if (!current) {
+    tls->encrypt_last_done = 0;
+  }
+  tls->encrypt_buffer_empty_count += count;
+  return count;
+}
+
+size_t pn_tls_decrypted_result(pn_tls_t *tls, pn_raw_buffer_t *buffers, size_t num) {
+  assert(tls);
+  size_t count = 0;
+
+  buff_ptr current = tls->result_first_decrypted;
+  if (!current) return 0;
+
+  buff_ptr previous;
+  for (; current && count < num; count++) {
+    assert(tls->result_buffers[current-1].type == buff_result_decrypted);
+    pbuffer_to_raw_buffer(&tls->result_buffers[current-1], buffers + count);
+    tls->result_buffers[current-1].type = buff_empty;
+
+    previous = current;
+    current = tls->result_buffers[current-1].next;
+  }
+  if (!count) return 0;
+
+  tls->result_buffers[previous-1].next = tls->result_first_empty;
+  tls->result_first_empty = tls->result_first_decrypted;
+
+  tls->result_first_decrypted = current;
+  if (!current) {
+    tls->result_last_decrypted = 0;
+  }
+  tls->result_buffer_empty_count += count;
+  tls->result_buffer_decrypted_count -= count;
+  return count;
+}
+
+size_t pn_tls_encrypted_result(pn_tls_t *tls, pn_raw_buffer_t *buffers, size_t num) {
+  assert(tls);
+  encrypt(tls);
+  size_t count = 0;
+
+  buff_ptr current = tls->result_first_encrypted;
+  if (!current) return 0;
+
+  buff_ptr previous;
+  for (; current && count < num; count++) {
+    assert(tls->result_buffers[current-1].type == buff_result_encrypted);
+    pbuffer_to_raw_buffer(&tls->result_buffers[current-1], buffers + count);
+    tls->result_buffers[current-1].type = buff_empty;
+
+    previous = current;
+    current = tls->result_buffers[current-1].next;
+  }
+  if (!count) return 0;
+
+  tls->result_buffers[previous-1].next = tls->result_first_empty;
+  tls->result_first_empty = tls->result_first_encrypted;
+
+  tls->result_first_encrypted = current;
+  if (!current) {
+    tls->result_last_encrypted = 0;
+  }
+  tls->result_buffer_empty_count += count;
+  tls->result_buffer_encrypted_count -= count;
+  return count;
+}
+
+static pbuffer_t *next_encrypt_pending(pn_tls_t *tls) {
+  if (!tls->encrypt_first_pending) return NULL;
+  buff_ptr p = tls->encrypt_first_pending;
+  pbuffer_t *current = &tls->encrypt_buffers[p-1];
+  if (current->size > tls->encrypt_pending_offset)
+    return current;
+  // current is full, convert from pending to done
+  assert(current->type == buff_encrypt_pending);
+  tls->encrypt_pending_offset = 0;
+  if (!tls->encrypt_first_done) {
+    tls->encrypt_first_done = p;
+  }
+  if (tls->encrypt_last_done) {
+    tls->encrypt_buffers[tls->encrypt_last_done-1].next = p;
+  }
+  tls->encrypt_last_done = p;
+  tls->encrypt_first_pending = current->next;
+  if (!tls->encrypt_first_pending)
+    tls->encrypt_last_pending = 0;
+  current->next = 0;
+  current->type = buff_encrypt_done;
+
+  // Advance
+  p = tls->encrypt_first_pending;
+  pbuffer_t *next = p ? &tls->encrypt_buffers[p-1] : NULL;
+  assert(!next || next->type == buff_encrypt_pending);
+  
+  return next;
+}
+
+static pbuffer_t *next_decrypt_pending(pn_tls_t *tls) {
+  if (!tls->decrypt_first_pending) return NULL;
+  buff_ptr p = tls->decrypt_first_pending;
+  pbuffer_t *current = &tls->decrypt_buffers[p-1];
+  if (current->size > tls->decrypt_pending_offset)
+    return current;
+  // current is full, convert from pending to done
+  assert(current->type == buff_decrypt_pending);
+  tls->decrypt_pending_offset = 0;
+  if (!tls->decrypt_first_done) {
+    tls->decrypt_first_done = p;
+  }
+  if (tls->decrypt_last_done) {
+    tls->decrypt_buffers[tls->decrypt_last_done-1].next = p;
+  }
+  tls->decrypt_last_done = p;
+  tls->decrypt_first_pending = current->next;
+  if (!tls->decrypt_first_pending)
+    tls->decrypt_last_pending = 0;
+  current->next = 0;
+  current->type = buff_decrypt_done;
+
+  // Advance
+  p = tls->decrypt_first_pending;
+  pbuffer_t *next = p ? &tls->decrypt_buffers[p-1] : NULL;
+  assert(!next || next->type == buff_decrypt_pending);
+
+  return next;
+}
+
+static void blank_result_pop(pn_tls_t *tls, buff_ptr p) {
+  assert (p && p == tls->result_first_blank);  // From front only.
+  tls->result_first_blank = tls->result_buffers[p-1].next;
+  tls->result_buffers[p-1].next = 0;
+}
+
+static void encrypted_result_add(pn_tls_t *tls, buff_ptr p) {
+  tls->result_buffers[p-1].type = buff_result_encrypted;
+  if (!tls->result_first_encrypted)
+    tls->result_first_encrypted = p;
+  if (tls->result_last_encrypted)
+    tls->result_buffers[tls->result_last_encrypted-1].next = p;
+  tls->result_last_encrypted = p;
+  tls->result_buffer_encrypted_count++;
+}
+
+static void decrypted_result_add(pn_tls_t *tls, buff_ptr p) {
+  tls->result_buffers[p-1].type = buff_result_decrypted;
+  if (!tls->result_first_decrypted)
+    tls->result_first_decrypted = p;
+  if (tls->result_last_decrypted)
+    tls->result_buffers[tls->result_last_decrypted-1].next = p;
+  tls->result_last_decrypted = p;
+  tls->result_buffer_decrypted_count--;
+}
+
+static buff_ptr current_encrypted_result(pn_tls_t *tls) {
+  buff_ptr p = tls->result_last_encrypted;
+  if (p && room(&tls->result_buffers[p-1]))
+    return p;  //  Has room so keep filling.
+  // Otherwise, use a blank reult if available.
+  return tls->result_first_blank;
+}
+
+static buff_ptr current_decrypted_result(pn_tls_t *tls) {
+  buff_ptr p = tls->result_last_decrypted;
+  if (p && room(&tls->result_buffers[p-1]))
+    return p;  //  Has room so keep filling.
+  // Otherwise, use a blank reult if available.
+  return tls->result_first_blank;
+}
+
+
+static void encrypt(pn_tls_t *tls) {
+  assert(tls);
+  buff_ptr curr_result = current_encrypted_result(tls);
+  if (!curr_result) return;  // No where to place encrypted data
+  pbuffer_t *pending = next_encrypt_pending(tls);
+  bool shutdown_input = false;  // TODO: missing close() call?
+    
+  while (true) {
+    // Insert unencrypted data into BIO.
+    // OpenSSL maps each BIO_write to a separate TLS record.
+    // The BIO can take 16KB + a bit before blocking.
+    // TODO: consider allowing application to configure BIO buffer size on encrypt side.
+    while (pending && !tls->enc_wblocked) {
+      size_t n = pending->size - tls->encrypt_pending_offset;
+      if (n) {
+        char *bytes = pending->bytes + pending->offset + tls->encrypt_pending_offset;
+        int wcount = BIO_write(tls->bio_ssl, bytes, n);
+        if (wcount < (int) n)
+          tls->enc_wblocked = true;
+        if (wcount > 0) {
+          tls->enc_rblocked = false;
+          tls->encrypt_pending_offset += wcount;
+        } else if (shutdown_input) {
+          ssl_log( NULL, PN_LEVEL_TRACE, "shutting down BIO write side");
+          (void)BIO_shutdown_wr( tls->bio_net_io );
+          shutdown_input = false;
+        }
+      }
+      pending = next_encrypt_pending(tls);
+    }
+
+    // Extract encrypted data from other side of BIO.
+    while (curr_result && !tls->enc_rblocked) {
+      pbuffer_t *result = &tls->result_buffers[curr_result-1];
+      size_t n = room(result);
+      assert(n);
+      int rcount = BIO_read(tls->bio_net_io, result->bytes + result->offset + result->size, n);
+      if (rcount < (int) n)
+        tls->enc_rblocked = true;
+      if (rcount > 0) {
+        tls->write_blocked = false;
+        tls->enc_wblocked = false;
+        if (result->size == 0) {
+          // first data inserted: convert from blank type to encrypted type
+          assert(result->type == buff_result_blank);
+          blank_result_pop(tls, curr_result);
+          encrypted_result_add(tls, curr_result);
+        }
+        result->size += rcount;
+        if (room(result) == 0) {
+          // Tentatively set a blank buffer for future output without popping.
+          curr_result = tls->result_first_blank;
+        }
+      } else if (!BIO_should_retry(tls->bio_ssl)) {
+        int reason = SSL_get_error( tls->ssl, rcount );
+        switch (reason) {
+        case SSL_ERROR_ZERO_RETURN:
+          // SSL closed cleanly
+          ssl_log(NULL, PN_LEVEL_TRACE, "SSL connection has closed");
+          // TODO: replacement for:       start_ssl_shutdown(transport);  // KAG: not sure - this may not be necessary
+          tls->ssl_closed = true;
+          break;
+        default:
+          // unexpected error
+          // TODO: proper error communication to app layer and shutdown
+          abort();
+        }
+      }       
+    }
+    
+    // Done if output buffers exhausted or all available encrypted bytes drained from BIO.
+    if (!curr_result || tls->enc_rblocked)
+      break;
+  }
+}
+
+static void decrypt(pn_tls_t *tls) {
+  assert(tls);
+  buff_ptr curr_result = current_decrypted_result(tls);
+  if (!curr_result) return;  // No where to place decrypted data
+  pbuffer_t *pending = next_decrypt_pending(tls);
+
+  while (true) {
+
+    // Insert encrypted data into openssl filter chain.
+    while (pending && !tls->dec_wblocked) {
+      size_t n = pending->size - tls->decrypt_pending_offset;
+      if (n) {
+        char *bytes = pending->bytes + pending->offset + tls->decrypt_pending_offset;
+        int wcount = BIO_write(tls->bio_net_io, bytes, n);
+        if (wcount < (int) n)
+          tls->dec_wblocked = true;
+        if (wcount > 0) {
+          tls->dec_rblocked = false;
+          tls->enc_rblocked = false;
+          tls->decrypt_pending_offset += wcount;
+        }
+        // ZZZ else error? shutdown one BIO side?
+      }
+      pending = next_decrypt_pending(tls);
+    }
+
+    // Extract decrypted data from other side of filter chain.
+    while (curr_result && !tls->dec_rblocked) {
+      pbuffer_t *result = &tls->result_buffers[curr_result-1];
+      size_t n = room(result);
+      assert(n);
+      int rcount = BIO_read(tls->bio_ssl, result->bytes + result->offset + result->size, n);
+      if (rcount > 0) {
+        tls->dec_wblocked = false;
+        if (result->size == 0) {
+          // first data inserted: convert from blank type to encrypted type
+          assert(result->type == buff_result_blank);
+          blank_result_pop(tls, curr_result);
+          decrypted_result_add(tls, curr_result);
+        }
+        result->size += rcount;
+        if (room(result) == 0) {
+          // Tentatively set a blank buffer for future output without popping.
+          curr_result = tls->result_first_blank;
+        }
+      } else {
+        if (!BIO_should_retry(tls->bio_ssl)) {
+          int reason = SSL_get_error( tls->ssl, rcount );
+          switch (reason) {
+          case SSL_ERROR_ZERO_RETURN:
+            // SSL closed cleanly
+            ssl_log(NULL, PN_LEVEL_TRACE, "SSL connection has closed");
+            tls->ssl_closed = true;
+            break;
+          default:
+            // TODO: communicate error and shutdown.
+            // unexpected error
+            // ssl_failed(transport);
+            ERR_print_errors_fp(stderr);
+            ssl_log_flush(NULL, 1);
+            abort();
+          }
+        } else {
+          if (rcount == -1 && BIO_should_read(tls->bio_ssl))
+            tls->dec_rblocked = true;
+        }
+      }
+    }
+    
+    // Done if outbufs exhausted or all inbufs decrypted
+    if (!curr_result || tls->dec_rblocked)
+      break;
+  }
+
+  if (!tls->can_encrypt && SSL_do_handshake(tls->ssl) == 1)
+    tls->can_encrypt = true;
+}

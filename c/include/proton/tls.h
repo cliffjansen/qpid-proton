@@ -454,13 +454,73 @@ PN_TLS_EXTERN bool pn_tls_decrypted_pending(pn_tls_t *tls);
 // unencrypted_buffers_in:  array of buffers to encrypt.  const values copied
 // encrypted destination_bufs (inout) array of buffers to hold encrypted data.  encrypted_destination_bufs[i].size updated.
 // Not all input buffers necessarily processed, but always complete buffers.
-PN_TLS_EXTERN ssize_t pn_tls_encrypt(pn_tls_t *tls, pn_raw_buffer_t const *unencrypted_buffers_in, size_t in_count, pn_raw_buffer_t *encrypted_destination_bufs, size_t dest_count, size_t *dest_written);
+PN_TLS_EXTERN ssize_t pn_tls_encrypt_v1(pn_tls_t *tls, pn_raw_buffer_t const *unencrypted_buffers_in, size_t in_count, pn_raw_buffer_t *encrypted_destination_bufs, size_t dest_count, size_t *dest_written);
 
 // return number of input buffers processed and decrypted buffers produced.  -1 if error.
-PN_TLS_EXTERN ssize_t pn_tls_decrypt(pn_tls_t *tls, pn_raw_buffer_t const *encrypted_buffers_in, size_t in_count, pn_raw_buffer_t *decrypted_destination_bufs, size_t dest_count, size_t *dest_written);
+PN_TLS_EXTERN ssize_t pn_tls_decrypt_v1(pn_tls_t *tls, pn_raw_buffer_t const *encrypted_buffers_in, size_t in_count, pn_raw_buffer_t *decrypted_destination_bufs, size_t dest_count, size_t *dest_written);
 
 // True if peers have negotiated a TLS session.  False indicates handshake in progress.
 PN_TLS_EXTERN bool pn_tls_can_encrypt(pn_tls_t *tls);
+
+
+// ----------------------------------------------------------------------------------------------------------------------
+
+// A common pool of buffers to put both encrypted and decrypted bytes in:
+// - this could easily just be split into 2 result buffer sets if preferred.
+
+// Give buffers to store encryption/decryption results
+// returns the number of buffers taken - it's possible that we don't have space
+// to record all of them
+PN_TLS_EXTERN size_t pn_tls_give_result_buffers(pn_tls_t*, pn_raw_buffer_t const*, size_t count);
+
+// Take result buffers back into app ownership, return the actual number of buffers returned
+// keep calling these until the number returned is 0 to make sure you get all buffers currently available
+PN_TLS_EXTERN size_t pn_tls_decrypted_result(pn_tls_t*, pn_raw_buffer_t*, size_t count);
+PN_TLS_EXTERN size_t pn_tls_encrypted_result(pn_tls_t*, pn_raw_buffer_t*, size_t count);
+
+// Encrypt buffers
+// returned value is number of buffers processed - these buffers are implicitly returned to the app
+// The others are held by the tls code (hmm up to a max I guess as we're not going to have indefinite
+// space for buffer descriptors)
+PN_TLS_EXTERN size_t pn_tls_encrypt(pn_tls_t*, pn_raw_buffer_t const* bufs, size_t count_bufs);
+
+// Decrypt
+// returned value is number of buffers processed - these buffers are implicitly returned to the app
+// The others are held by the tls code (hmm up to a max I guess as we're not going to have indefinite
+// space for buffer descriptors)
+PN_TLS_EXTERN size_t pn_tls_decrypt(pn_tls_t*, pn_raw_buffer_t const* bufs, size_t count_bufs);
+
+// Take input buffers back into app ownership, return the actual number of buffers returned
+// keep calling these until the number returned is 0 to make sure you get all buffers currently available
+// These names are a bit too close for comfort to the result buffers but they'll do for now
+PN_TLS_EXTERN size_t pn_tls_take_decrypt_buffers(pn_tls_t*, pn_raw_buffer_t*, size_t count);
+PN_TLS_EXTERN size_t pn_tls_take_encrypt_buffers(pn_tls_t*, pn_raw_buffer_t*, size_t count);
+
+// Return the max number of buffers we can hold
+PN_TLS_EXTERN size_t pn_tls_query_max_encrypt_buffers(pn_tls_t*);
+PN_TLS_EXTERN size_t pn_tls_query_max_decrypt_buffers(pn_tls_t*);
+
+// Query number of _bytes_ needed to process
+// This will be 0 if we have nothing pending to encrypt, 
+// Hopefully we can tell a number of bytes necessary to encrypt what's pending
+// otherwise we my have to loop calling this and pn_tls_give_result_buffers()
+
+// Possibly this should return a number of buffers needed - it's not clear to me without
+// implementing!
+
+// Also possible is that all this can do is return a bool and that would require to loop
+// giving buffers until false.
+PN_TLS_EXTERN size_t pn_tls_query_need_result_buffers(pn_tls_t*);
+
+PN_TLS_EXTERN size_t pn_tls_decrypt_buffers_capacity(pn_tls_t*);
+PN_TLS_EXTERN size_t pn_tls_encrypt_buffers_capacity(pn_tls_t*);
+PN_TLS_EXTERN size_t pn_tls_result_buffers_capacity(pn_tls_t*);
+
+PN_TLS_EXTERN size_t pn_tls_decrypted_result_count(pn_tls_t*);
+PN_TLS_EXTERN size_t pn_tls_encrypted_result_count(pn_tls_t*);
+PN_TLS_EXTERN uint32_t pn_tls_last_decrypted_buffer_size(pn_tls_t*);
+PN_TLS_EXTERN uint32_t pn_tls_last_encrypted_buffer_size(pn_tls_t*);
+
 
 /**
  * @}
