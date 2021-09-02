@@ -285,9 +285,30 @@ PN_TLS_EXTERN int pn_tls_domain_allow_unsecured_client(pn_tls_domain_t *domain);
  * @param[in] session_id an opaque identifier of a previous TLS session domain that configures the TLS session.
  * @return a pointer to the TLS object.  Returns NULL memory allocation fails.
  */
-PN_TLS_EXTERN pn_tls_t *pn_tls(pn_tls_domain_t *domain,
+PN_TLS_EXTERN pn_tls_t *pn_tls_v1(pn_tls_domain_t *domain,
                           const char *hostname,
                           const char *session_id);
+
+
+/**
+ * Create a new TLS session object derived from a domain.
+ *
+ * @param[in] domain the domain that configures the TLS session.
+ * @return a pointer to the TLS object.  Returns NULL if memory allocation fails or if domain is NULL.
+ */
+PN_TLS_EXTERN pn_tls_t *pn_tls(pn_tls_domain_t *domain);
+
+/**
+ * Start a TLS session.
+ *
+ * This method starts the operation of a TLS session based on the object's
+ * configuration.  Subsequent configuration steps will have no effect.  A client
+ * TLS session will generate one or more result buffers for the clienthello
+ * handshake.
+ * @param[in] tls the tls session to configured.
+ * @return 0 on success, else an error code.
+ */
+PN_TLS_EXTERN int pn_tls_start(pn_tls_t *tls);
 
 
 PN_TLS_EXTERN void pn_tls_free(pn_tls_t *tls);
@@ -495,6 +516,9 @@ PN_TLS_EXTERN size_t pn_tls_decrypt(pn_tls_t*, pn_raw_buffer_t const* bufs, size
 // These names are a bit too close for comfort to the result buffers but they'll do for now
 PN_TLS_EXTERN size_t pn_tls_take_decrypt_buffers(pn_tls_t*, pn_raw_buffer_t*, size_t count);
 PN_TLS_EXTERN size_t pn_tls_take_encrypt_buffers(pn_tls_t*, pn_raw_buffer_t*, size_t count);
+
+// Take unused result buffers back into app ownership, return the actual number of buffers returned
+PN_TLS_EXTERN size_t pn_tls_take_unused_result_buffers(pn_tls_t*, pn_raw_buffer_t*, size_t count);
 
 // Return the max number of buffers we can hold
 PN_TLS_EXTERN size_t pn_tls_query_max_encrypt_buffers(pn_tls_t*);

@@ -62,9 +62,9 @@
  */
 
 enum {
-  result_buffer_count = 4,
-  decrypt_buffer_count = 4,
-  encrypt_buffer_count = 4
+  result_buffer_count = 8,
+  decrypt_buffer_count = 5,
+  encrypt_buffer_count = 5
 };
 
 typedef enum {
@@ -163,6 +163,7 @@ struct pn_tls_t {
 
   pn_tls_mode_t mode;
   pn_tls_verify_mode_t verify_mode;
+  pn_tls_domain_t *domain;
   const char    *session_id;
   const char *peer_hostname;
   SSL *ssl;
@@ -191,6 +192,7 @@ struct pn_tls_t {
   bool dec_rblocked;
   bool dec_wblocked;
   bool can_encrypt;
+  bool started;
 
   char *subject;
   X509 *peer_certificate;
@@ -912,15 +914,12 @@ void pn_tls_free(pn_tls_t *ssl)
   free(ssl);
 }
 
-static int pni_tls_init(pn_tls_t *ssl, pn_tls_domain_t *domain, const char *session_id)
+static int pni_tls_init(pn_tls_t *ssl, pn_tls_domain_t *domain, const char *unused)
 {
   if (!ssl) return -1;
 
   ssl->mode = domain->mode;
   ssl->verify_mode = domain->verify_mode;
-
-  if (session_id && domain->mode == PN_TLS_MODE_CLIENT)
-    ssl->session_id = pni_strdup(session_id);
 
   // TODO: confirm allow_unsecured is not necessary.
   // If SSL doesn't specifically allow skipping encryption, require SSL
@@ -931,7 +930,7 @@ static int pni_tls_init(pn_tls_t *ssl, pn_tls_domain_t *domain, const char *sess
   return init_ssl_socket(ssl, domain);
 }
 
-pn_tls_t *pn_tls(pn_tls_domain_t *domain, const char* hostname, const char *session_id) {
+pn_tls_t *pn_tls_v1(pn_tls_domain_t *domain, const char* hostname, const char *session_id) {
   if (!domain) return NULL;
   if (domain->mode == PN_TLS_MODE_SERVER && (hostname || session_id))
     return NULL;
@@ -960,6 +959,22 @@ pn_tls_t *pn_tls(pn_tls_domain_t *domain, const char* hostname, const char *sess
     return(NULL);
   }
   return tls;
+}
+
+pn_tls_t *pn_tls(pn_tls_domain_t *domain) {
+  if (!domain) return NULL;
+  pn_tls_t *tls = (pn_tls_t *) calloc(1, sizeof(pn_tls_t));
+  if (!tls) return NULL;
+  tls->domain = domain;
+
+  return tls;
+}
+
+int pn_tls_start(pn_tls_t *tls) {
+  if (tls->started)
+    return PN_ARG_ERR;
+  tls->started = true;
+  return pni_tls_init(tls, tls->domain, tls->session_id);
 }
 
 int pn_tls_domain_allow_unsecured_client(pn_tls_domain_t *domain)
@@ -1777,11 +1792,8 @@ size_t pn_tls_give_result_buffers(pn_tls_t* tls, pn_raw_buffer_t const* bufs, si
     current = tls->result_buffers[current-1].next;
   }
 
-  if (!tls->result_first_blank) {
-    tls->result_first_blank = tls->result_first_empty;
-  }
-
-  tls->result_buffers[previous-1].next = 0;
+  tls->result_buffers[previous-1].next = tls->result_first_blank;
+  tls->result_first_blank = tls->result_first_empty;
   tls->result_first_empty = current;
 
   tls->result_buffer_empty_count -= can_take;
@@ -1845,6 +1857,31 @@ size_t pn_tls_take_encrypt_buffers(pn_tls_t *tls, pn_raw_buffer_t *buffers, size
     tls->encrypt_last_done = 0;
   }
   tls->encrypt_buffer_empty_count += count;
+  return count;
+}
+
+size_t pn_tls_take_unused_result_buffers(pn_tls_t *tls, pn_raw_buffer_t *buffers, size_t num) {
+  assert(tls);
+  size_t count = 0;
+  buff_ptr current = tls->result_first_blank;
+  if (!current) return 0;
+
+  buff_ptr previous;
+  for (; current && count < num; count++) {
+    assert(tls->result_buffers[current-1].type == buff_result_blank);
+    pbuffer_to_raw_buffer(&tls->result_buffers[current-1], buffers + count);
+    tls->result_buffers[current-1].type = buff_empty;
+
+    previous = current;
+    current = tls->result_buffers[current-1].next;
+  }
+  if (!count) return 0;
+
+  tls->result_buffers[previous-1].next = tls->result_first_empty;
+  tls->result_first_empty = tls->result_first_blank;
+
+  tls->result_first_blank = current;
+  tls->result_buffer_empty_count += count;
   return count;
 }
 

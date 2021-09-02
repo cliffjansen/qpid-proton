@@ -56,9 +56,9 @@ TEST_CASE("tls foo and bar") {
   REQUIRE(client_domain);
   pn_tls_domain_t *server_domain = pn_tls_domain(PN_TLS_MODE_SERVER);
   REQUIRE(server_domain);
-  pn_tls_t *cli_tls = pn_tls(client_domain, NULL, NULL);
+  pn_tls_t *cli_tls = pn_tls(client_domain);
   CHECK(cli_tls == NULL); // No default domain configuration
-  pn_tls_t *srv_tls = pn_tls(server_domain, NULL, NULL);
+  pn_tls_t *srv_tls = pn_tls(server_domain);
   CHECK(srv_tls == NULL); // No default domain configuration for server either
 
   pn_tls_free(cli_tls);
@@ -77,8 +77,9 @@ TEST_CASE("plain old fubar") {
   REQUIRE(pn_tls_domain_set_peer_authentication(client_domain, PN_TLS_VERIFY_PEER, NULL) == 0);
 
 
-  pn_tls_t *cli_tls = pn_tls(client_domain, "test_server", NULL);
-  pn_tls_t *srv_tls = pn_tls(server_domain, NULL, NULL);
+  pn_tls_t *cli_tls = pn_tls(client_domain);
+  pn_tls_set_peer_hostname(cli_tls, "test_server");
+  pn_tls_t *srv_tls = pn_tls(server_domain);
 
   FILE *fp=fopen("/tmp/cjzzz", "a");
   fprintf(fp, "init foo %d %d\n", (int) pn_tls_encrypted_pending(cli_tls), (int) pn_tls_encrypted_pending(srv_tls));

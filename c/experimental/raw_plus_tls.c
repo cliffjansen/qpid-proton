@@ -328,7 +328,9 @@ static void create_client_connection(jabber_t *j) {
 
   // Client side TLS can be set up anywhere between here and first write (TLS clienthello).
   if (j->cli_domain) {
-    jc->tls = pn_tls(j->cli_domain, "test_server", NULL);
+    jc->tls = pn_tls(j->cli_domain);
+    pn_tls_set_peer_hostname(jc->tls, "test_server");
+    pn_tls_start(jc->tls);
     jc->tls_has_output = true; // always true for initial client side TLS.
   }
 
@@ -345,9 +347,10 @@ static void create_server_connection(jabber_t *j, pn_listener_t *listener) {
   pn_raw_connection_set_context(c, (void *) jc);
 
   // Server side TLS can be set up anywhere between here and first read (TLS clienthello).
-  if (j->srv_domain)
-    jc->tls = pn_tls(j->srv_domain, NULL, NULL);
-  
+  if (j->srv_domain) {
+    jc->tls = pn_tls(j->srv_domain);
+    pn_tls_start(jc->tls);
+  }
   pn_listener_raw_accept(listener, c);
   printf("**listener accepted %p\n", (void *)jc);
 }
@@ -376,6 +379,16 @@ static bool handle_raw_connection(jabber_connection_t* jc, pn_event_t* event) {
       handle_incoming(jc);
       if (jc->tls_has_output)
         handle_outgoing(jc);
+    } break;
+
+    case PN_RAW_CONNECTION_DISCONNECTED: {
+      if (jc->tls) {
+        pn_raw_buffer_t rb;
+        while (pn_tls_take_unused_result_buffers(jc->tls, &rb, 1) == 1)
+          rbuf_pool_return(&rb);
+        free(jc->tls);
+        jc->tls = NULL;
+      }
     } break;
   }
   return true;
