@@ -492,58 +492,68 @@ PN_TLS_EXTERN bool pn_tls_can_encrypt(pn_tls_t *tls);
 // Give buffers to store encryption/decryption results
 // returns the number of buffers taken - it's possible that we don't have space
 // to record all of them
-PN_TLS_EXTERN size_t pn_tls_give_result_buffers(pn_tls_t*, pn_raw_buffer_t const*, size_t count);
+PN_TLS_EXTERN size_t pn_tls_give_encrypt_result_buffers(pn_tls_t*, pn_raw_buffer_t const*, size_t count);
+PN_TLS_EXTERN size_t pn_tls_give_decrypt_result_buffers(pn_tls_t*, pn_raw_buffer_t const*, size_t count);
+
 
 // Take result buffers back into app ownership, return the actual number of buffers returned
 // keep calling these until the number returned is 0 to make sure you get all buffers currently available
-PN_TLS_EXTERN size_t pn_tls_decrypted_result(pn_tls_t*, pn_raw_buffer_t*, size_t count);
-PN_TLS_EXTERN size_t pn_tls_encrypted_result(pn_tls_t*, pn_raw_buffer_t*, size_t count);
+// Gives only buffers with encrypted/decrypted content before pn_tls_stop() and all buffers afterwards.
+PN_TLS_EXTERN size_t pn_tls_take_decrypted_results(pn_tls_t*, pn_raw_buffer_t*, size_t count);
+PN_TLS_EXTERN size_t pn_tls_take_encrypted_results(pn_tls_t*, pn_raw_buffer_t*, size_t count);
 
-// Encrypt buffers
-// returned value is number of buffers processed - these buffers are implicitly returned to the app
-// The others are held by the tls code (hmm up to a max I guess as we're not going to have indefinite
-// space for buffer descriptors)
-PN_TLS_EXTERN size_t pn_tls_encrypt(pn_tls_t*, pn_raw_buffer_t const* bufs, size_t count_bufs);
+// Stage data to be encrypted by the engine at a future pn_tls_process() step.
+// returned value is number of buffers taken (ownership transfer)
+// i.e. held by the tls code - governed by capacity.
+PN_TLS_EXTERN size_t pn_tls_give_unencrypted_buffers(pn_tls_t*, pn_raw_buffer_t const* bufs, size_t count_bufs);
 
-// Decrypt
-// returned value is number of buffers processed - these buffers are implicitly returned to the app
-// The others are held by the tls code (hmm up to a max I guess as we're not going to have indefinite
-// space for buffer descriptors)
-PN_TLS_EXTERN size_t pn_tls_decrypt(pn_tls_t*, pn_raw_buffer_t const* bufs, size_t count_bufs);
+// returned value is number of buffers taken
+PN_TLS_EXTERN size_t pn_tls_give_undecrypted_buffers(pn_tls_t*, pn_raw_buffer_t const* bufs, size_t count_bufs);
 
 // Take input buffers back into app ownership, return the actual number of buffers returned
+// Returns buffers whose data is fully processed (or pn_tls_stop() called).
 // keep calling these until the number returned is 0 to make sure you get all buffers currently available
-// These names are a bit too close for comfort to the result buffers but they'll do for now
-PN_TLS_EXTERN size_t pn_tls_take_decrypt_buffers(pn_tls_t*, pn_raw_buffer_t*, size_t count);
-PN_TLS_EXTERN size_t pn_tls_take_encrypt_buffers(pn_tls_t*, pn_raw_buffer_t*, size_t count);
+PN_TLS_EXTERN size_t pn_tls_take_undecrypted_buffers(pn_tls_t*, pn_raw_buffer_t*, size_t count);
+PN_TLS_EXTERN size_t pn_tls_take_unencrypted_buffers(pn_tls_t*, pn_raw_buffer_t*, size_t count);
 
-// Take unused result buffers back into app ownership, return the actual number of buffers returned
-PN_TLS_EXTERN size_t pn_tls_take_unused_result_buffers(pn_tls_t*, pn_raw_buffer_t*, size_t count);
+// Return the max number of additional buffers we can hold
+PN_TLS_EXTERN size_t pn_tls_unencrypted_buffers_capacity(pn_tls_t*);
+PN_TLS_EXTERN size_t pn_tls_undecrypted_buffers_capacity(pn_tls_t*);
 
-// Return the max number of buffers we can hold
-PN_TLS_EXTERN size_t pn_tls_query_max_encrypt_buffers(pn_tls_t*);
-PN_TLS_EXTERN size_t pn_tls_query_max_decrypt_buffers(pn_tls_t*);
+// True if there is no remaining space in the XXcrypt result buffers owned by the
+// engine and there is XXcryped data available to put in a result buffer since
+// the last pn_tls_process()
+PN_TLS_EXTERN bool pn_tls_need_encrypt_result_buffers(pn_tls_t*);
+PN_TLS_EXTERN bool pn_tls_need_decrypt_result_buffers(pn_tls_t*);
 
-// Query number of _bytes_ needed to process
-// This will be 0 if we have nothing pending to encrypt, 
-// Hopefully we can tell a number of bytes necessary to encrypt what's pending
-// otherwise we my have to loop calling this and pn_tls_give_result_buffers()
+PN_TLS_EXTERN size_t pn_tls_encrypt_result_buffers_capacity(pn_tls_t*);
+PN_TLS_EXTERN size_t pn_tls_encrypt_result_buffers_capacity(pn_tls_t*);
 
-// Possibly this should return a number of buffers needed - it's not clear to me without
-// implementing!
-
-// Also possible is that all this can do is return a bool and that would require to loop
-// giving buffers until false.
-PN_TLS_EXTERN size_t pn_tls_query_need_result_buffers(pn_tls_t*);
-
-PN_TLS_EXTERN size_t pn_tls_decrypt_buffers_capacity(pn_tls_t*);
-PN_TLS_EXTERN size_t pn_tls_encrypt_buffers_capacity(pn_tls_t*);
-PN_TLS_EXTERN size_t pn_tls_result_buffers_capacity(pn_tls_t*);
-
+// Number of buffers ready to be returned by take operation since last pn_tls_process() or pn_tls_stop()
 PN_TLS_EXTERN size_t pn_tls_decrypted_result_count(pn_tls_t*);
 PN_TLS_EXTERN size_t pn_tls_encrypted_result_count(pn_tls_t*);
+
 PN_TLS_EXTERN uint32_t pn_tls_last_decrypted_buffer_size(pn_tls_t*);
 PN_TLS_EXTERN uint32_t pn_tls_last_encrypted_buffer_size(pn_tls_t*);
+
+
+// Configurable.  Zero implies "use default".  No effect after pn_tls_start().
+PN_TLS_EXTERN void pn_tls_set_unencrypted_buffer_max_capacity(pn_tls_t*, size_t s);
+PN_TLS_EXTERN void pn_tls_set_undecrypted_buffer_max_capacity(pn_tls_t*, size_t s);
+PN_TLS_EXTERN void pn_tls_set_encrypt_result_buffer_max_capacity(pn_tls_t*, size_t s);
+PN_TLS_EXTERN void pn_tls_set_decrypt_result_buffer_max_capacity(pn_tls_t*, size_t s);
+
+// Process as much unencrypted data to encrypted result data as possible.
+// Also process as much undecrypted data to decryptedcrypted result data as possible.
+// Check for TLS engine errors here.
+// Always returns an error if called before pn_tls_start() or after pn_tls_stop().
+PN_TLS_EXTERN int pn_tls_process(pn_tls_t* tls);
+
+// Future pn_tls_process() or pn_tls_give_xxx() are no-ops.
+// Unused encrypt/decrypt result buffers become zero length encrypted/decrypted result
+// buffers and can be reclaimed.
+PN_TLS_EXTERN int pn_tls_stop(pn_tls_t* tls);
+
 
 
 /**
