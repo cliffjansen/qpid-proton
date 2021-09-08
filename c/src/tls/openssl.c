@@ -62,9 +62,10 @@
  */
 
 enum {
-  result_buffer_count = 8,
-  decrypt_buffer_count = 5,
-  encrypt_buffer_count = 5
+  eresult_buffer_count = 4,
+  dresult_buffer_count = 4,
+  decrypt_buffer_count = 4,
+  encrypt_buffer_count = 4
 };
 
 typedef enum {
@@ -76,9 +77,11 @@ typedef enum {
   buff_encrypt_pending    = 3, // application buffers for encryption
   buff_encrypt_done       = 4,
 
-  buff_result_blank       = 5, // result buffers for encrypted/decrypted data
-  buff_result_encrypted   = 6,
-  buff_result_decrypted   = 7
+  buff_eresult_blank       = 5,
+  buff_eresult_encrypted   = 6,
+
+  buff_dresult_blank       = 7,
+  buff_dresult_decrypted   = 8
 } buff_type;
 
 
@@ -129,34 +132,43 @@ struct pn_tls_domain_t {
 #define JRSIZE    (4*1024)
 
 struct pn_tls_t {
-  pbuffer_t result_buffers[result_buffer_count];
+  pbuffer_t eresult_buffers[eresult_buffer_count];
+  pbuffer_t dresult_buffers[dresult_buffer_count];
   pbuffer_t encrypt_buffers[encrypt_buffer_count];
   pbuffer_t decrypt_buffers[decrypt_buffer_count];
 
   uint16_t encrypt_buffer_empty_count;
   uint16_t decrypt_buffer_empty_count;
-  uint16_t result_buffer_encrypted_count;
-  uint16_t result_buffer_decrypted_count;
-  uint16_t result_buffer_empty_count;
+  uint16_t eresult_encrypted_count;
+  uint16_t eresult_empty_count;
+  uint16_t dresult_decrypted_count;
+  uint16_t dresult_empty_count;
 
-  buff_ptr result_first_empty;
-  buff_ptr result_first_blank;   // blanks are unordered, just like empty slots
-  buff_ptr result_first_encrypted;
-  buff_ptr result_last_encrypted;
-  buff_ptr result_first_decrypted;
-  buff_ptr result_last_decrypted;
-
-  buff_ptr encrypt_first_empty;
+  // Lists within encrypt_buffers
+  buff_ptr encrypt_first_empty;   // unordered: no encryp_last_empty
   buff_ptr encrypt_first_pending;
   buff_ptr encrypt_last_pending;
   buff_ptr encrypt_first_done;
   buff_ptr encrypt_last_done;
 
-  buff_ptr decrypt_first_empty;
+  // Lists within decrypt_buffers
+  buff_ptr decrypt_first_empty;  // unordered.
   buff_ptr decrypt_first_pending;
   buff_ptr decrypt_last_pending;
   buff_ptr decrypt_first_done;
   buff_ptr decrypt_last_done;
+
+  // Lists within eresult_buffers
+  buff_ptr eresult_first_empty;  // unordered.
+  buff_ptr eresult_first_blank;  // unordered.
+  buff_ptr eresult_first_encrypted;
+  buff_ptr eresult_last_encrypted;
+
+  // Lists within dresult_buffers
+  buff_ptr dresult_first_empty;  // unordered.
+  buff_ptr dresult_first_blank;  // unordered.
+  buff_ptr dresult_first_decrypted;
+  buff_ptr dresult_last_decrypted;
 
   uint32_t encrypt_pending_offset;  // if set, points to remaining bytes to consume in working buffer.
   uint32_t decrypt_pending_offset;
@@ -193,6 +205,7 @@ struct pn_tls_t {
   bool dec_wblocked;
   bool can_encrypt;
   bool started;
+  bool stopped;
 
   char *subject;
   X509 *peer_certificate;
@@ -210,43 +223,44 @@ static void tls_initialize_buffers(pn_tls_t *tls) {
     tls->decrypt_buffers[i-1].type = buff_empty;
   }
 
-  for (buff_ptr i = 1; i<=result_buffer_count; i++) {
-    tls->result_buffers[i-1].next = i==result_buffer_count ? 0 : i+1;
-    tls->result_buffers[i-1].type = buff_empty;
+  for (buff_ptr i = 1; i<=eresult_buffer_count; i++) {
+    tls->eresult_buffers[i-1].next = i==eresult_buffer_count ? 0 : i+1;
+    tls->eresult_buffers[i-1].type = buff_empty;
+    tls->dresult_buffers[i-1].next = i==eresult_buffer_count ? 0 : i+1;
+    tls->dresult_buffers[i-1].type = buff_empty;
   }
 
   tls->encrypt_buffer_empty_count = encrypt_buffer_count;
   tls->decrypt_buffer_empty_count = decrypt_buffer_count;
-  tls->result_buffer_empty_count = result_buffer_count;
+  tls->eresult_empty_count = eresult_buffer_count;
+  tls->dresult_empty_count = dresult_buffer_count;
 
-  tls->result_first_empty = 1;
+  tls->eresult_first_empty = 1;
+  tls->dresult_first_empty = 1;
   tls->encrypt_first_empty = 1;
   tls->decrypt_first_empty = 1;
 }
 
-size_t pn_tls_encrypt_buffers_capacity(pn_tls_t *tls) { return tls->encrypt_buffer_empty_count; }
-size_t pn_tls_decrypt_buffers_capacity(pn_tls_t *tls) { return tls->decrypt_buffer_empty_count; }
-size_t pn_tls_result_buffers_capacity(pn_tls_t *tls) { return tls->result_buffer_empty_count; }
+size_t pn_tls_encrypt_input_buffers_capacity(pn_tls_t *tls) { return tls->encrypt_buffer_empty_count; }
+size_t pn_tls_decrypt_input_buffers_capacity(pn_tls_t *tls) { return tls->decrypt_buffer_empty_count; }
+size_t pn_tls_encrypt_result_buffers_capacity(pn_tls_t *tls) { return tls->eresult_empty_count; }
+size_t pn_tls_decrypt_result_buffers_capacity(pn_tls_t *tls) { return tls->dresult_empty_count; }
 
 size_t pn_tls_decrypted_result_count(pn_tls_t *tls) {
-  decrypt(tls);
-  return tls->result_buffer_decrypted_count;
+  return tls->dresult_decrypted_count;
 }
 
 size_t pn_tls_encrypted_result_count(pn_tls_t *tls) {
-  encrypt(tls);
-  return tls->result_buffer_encrypted_count;
+  return tls->eresult_encrypted_count;
 }
 
 
 uint32_t pn_tls_last_decrypted_buffer_size(pn_tls_t *tls) {
-  decrypt(tls);
-  return tls->result_last_decrypted ? tls->result_buffers[tls->result_last_decrypted-1].size : 0;
+  return tls->dresult_last_decrypted ? tls->dresult_buffers[tls->dresult_last_decrypted-1].size : 0;
 }
 
 uint32_t pn_tls_last_encrypted_buffer_size(pn_tls_t *tls) {
-  encrypt(tls);
-  return tls->result_last_encrypted ? tls->result_buffers[tls->result_last_encrypted-1].size : 0;
+  return tls->eresult_last_encrypted ? tls->eresult_buffers[tls->eresult_last_encrypted-1].size : 0;
 }
 
 
@@ -977,6 +991,13 @@ int pn_tls_start(pn_tls_t *tls) {
   return pni_tls_init(tls, tls->domain, tls->session_id);
 }
 
+int pn_tls_stop(pn_tls_t *tls) {
+  if (tls->stopped)
+    return PN_ARG_ERR;
+  tls->stopped = true;
+  return 0;
+}
+
 int pn_tls_domain_allow_unsecured_client(pn_tls_domain_t *domain)
 {
   if (!domain) return -1;
@@ -1320,20 +1341,18 @@ const char* pn_tls_get_remote_subject_subfield(pn_tls_t *ssl, pn_tls_cert_subjec
   return NULL;
 }
 
-bool pn_tls_encrypted_pending(pn_tls_t *ssl)
+bool pn_tls_encrypted_pending(pn_tls_t *tls)
 {
-  if (ssl) {
-    if (ssl->bio_net_io)
-      return !ssl->enc_rblocked;
+  if (tls && tls->started) {
+    return tls->eresult_first_encrypted;
   }
   return 0;
 }
 
-bool pn_tls_decrypted_pending(pn_tls_t *ssl)
+bool pn_tls_decrypted_pending(pn_tls_t *tls)
 {
-  if (ssl) {
-    if (ssl->bio_ssl)
-      return !ssl->dec_rblocked;
+  if (tls && tls->started) {
+    return tls->dresult_first_decrypted;
   }
   return 0;
 }
@@ -1706,10 +1725,10 @@ static void pbuffer_to_raw_buffer(pbuffer_t *pbuf, pn_raw_buffer_t *rbuf) {
 }
 
 
-size_t pn_tls_encrypt(pn_tls_t* tls, pn_raw_buffer_t const* bufs, size_t count_bufs) {
+size_t pn_tls_give_encrypt_input_buffers(pn_tls_t* tls, pn_raw_buffer_t const* bufs, size_t count_bufs) {
   assert(tls);
 
-  size_t can_take = pn_min(count_bufs, pn_tls_encrypt_buffers_capacity(tls));
+  size_t can_take = pn_min(count_bufs, pn_tls_encrypt_input_buffers_capacity(tls));
   if ( can_take==0 ) return 0;
 
   buff_ptr current = tls->encrypt_first_empty;
@@ -1736,14 +1755,13 @@ size_t pn_tls_encrypt(pn_tls_t* tls, pn_raw_buffer_t const* bufs, size_t count_b
   tls->encrypt_first_empty = current;
 
   tls->encrypt_buffer_empty_count -= can_take;
-  encrypt(tls); // Try to encrypt the inbound buffers.
   return can_take;
 }
 
-size_t pn_tls_decrypt(pn_tls_t* tls, pn_raw_buffer_t const* bufs, size_t count_bufs) {
+size_t pn_tls_give_decrypt_input_buffers(pn_tls_t* tls, pn_raw_buffer_t const* bufs, size_t count_bufs) {
   assert(tls);
 
-  size_t can_take = pn_min(count_bufs, pn_tls_decrypt_buffers_capacity(tls));
+  size_t can_take = pn_min(count_bufs, pn_tls_decrypt_input_buffers_capacity(tls));
   if ( can_take==0 ) return 0;
 
   buff_ptr current = tls->decrypt_first_empty;
@@ -1770,41 +1788,65 @@ size_t pn_tls_decrypt(pn_tls_t* tls, pn_raw_buffer_t const* bufs, size_t count_b
   tls->decrypt_first_empty = current;
 
   tls->decrypt_buffer_empty_count -= can_take;
-  decrypt(tls);
   return can_take;
 }
 
-size_t pn_tls_give_result_buffers(pn_tls_t* tls, pn_raw_buffer_t const* bufs, size_t count_bufs) {
+size_t pn_tls_give_encrypt_result_buffers(pn_tls_t* tls, pn_raw_buffer_t const* bufs, size_t count_bufs) {
   assert(tls);
 
-  size_t can_take = pn_min(count_bufs, pn_tls_result_buffers_capacity(tls));
+  size_t can_take = pn_min(count_bufs, pn_tls_encrypt_result_buffers_capacity(tls));
   if ( can_take==0 ) return 0;
 
-  buff_ptr current = tls->result_first_empty;
+  buff_ptr current = tls->eresult_first_empty;
   assert(current);
 
   buff_ptr previous;
   for (size_t i = 0; i < can_take; i++) {
     // Get next free
-    assert(tls->result_buffers[current-1].type == buff_empty);
-    raw_buffer_to_pbuffer(bufs + i, &tls->result_buffers[current-1], buff_result_blank);
+    assert(tls->eresult_buffers[current-1].type == buff_empty);
+    raw_buffer_to_pbuffer(bufs + i, &tls->eresult_buffers[current-1], buff_eresult_blank);
     previous = current;
-    current = tls->result_buffers[current-1].next;
+    current = tls->eresult_buffers[current-1].next;
   }
 
-  tls->result_buffers[previous-1].next = tls->result_first_blank;
-  tls->result_first_blank = tls->result_first_empty;
-  tls->result_first_empty = current;
+  tls->eresult_buffers[previous-1].next = tls->eresult_first_blank;
+  tls->eresult_first_blank = tls->eresult_first_empty;
+  tls->eresult_first_empty = current;
 
-  tls->result_buffer_empty_count -= can_take;
+  tls->eresult_empty_count -= can_take;
   return can_take;
 }
 
-size_t pn_tls_take_decrypt_buffers(pn_tls_t *tls, pn_raw_buffer_t *buffers, size_t num) {
+size_t pn_tls_give_decrypt_result_buffers(pn_tls_t* tls, pn_raw_buffer_t const* bufs, size_t count_bufs) {
+  assert(tls);
+
+  size_t can_take = pn_min(count_bufs, pn_tls_decrypt_result_buffers_capacity(tls));
+  if ( can_take==0 ) return 0;
+
+  buff_ptr current = tls->dresult_first_empty;
+  assert(current);
+
+  buff_ptr previous;
+  for (size_t i = 0; i < can_take; i++) {
+    // Get next free
+    assert(tls->dresult_buffers[current-1].type == buff_empty);
+    raw_buffer_to_pbuffer(bufs + i, &tls->dresult_buffers[current-1], buff_dresult_blank);
+    previous = current;
+    current = tls->dresult_buffers[current-1].next;
+  }
+
+  tls->dresult_buffers[previous-1].next = tls->dresult_first_blank;
+  tls->dresult_first_blank = tls->dresult_first_empty;
+  tls->dresult_first_empty = current;
+
+  tls->dresult_empty_count -= can_take;
+  return can_take;
+}
+
+size_t pn_tls_take_decrypt_input_buffers(pn_tls_t *tls, pn_raw_buffer_t *buffers, size_t num) {
   assert(tls);
   size_t count = 0;
 
-  decrypt(tls);
   buff_ptr current = tls->decrypt_first_done;
   if (!current) return 0;
 
@@ -1830,11 +1872,10 @@ size_t pn_tls_take_decrypt_buffers(pn_tls_t *tls, pn_raw_buffer_t *buffers, size
   return count;
 }
 
-size_t pn_tls_take_encrypt_buffers(pn_tls_t *tls, pn_raw_buffer_t *buffers, size_t num) {
+size_t pn_tls_take_encrypt_input_buffers(pn_tls_t *tls, pn_raw_buffer_t *buffers, size_t num) {
   assert(tls);
   size_t count = 0;
 
-  encrypt(tls);
   buff_ptr current = tls->encrypt_first_done;
   if (!current) return 0;
 
@@ -1860,89 +1901,63 @@ size_t pn_tls_take_encrypt_buffers(pn_tls_t *tls, pn_raw_buffer_t *buffers, size
   return count;
 }
 
-size_t pn_tls_take_unused_result_buffers(pn_tls_t *tls, pn_raw_buffer_t *buffers, size_t num) {
+size_t pn_tls_take_decrypted_result_buffers(pn_tls_t *tls, pn_raw_buffer_t *buffers, size_t num) {
   assert(tls);
   size_t count = 0;
-  buff_ptr current = tls->result_first_blank;
+
+  buff_ptr current = tls->dresult_first_decrypted;
   if (!current) return 0;
 
   buff_ptr previous;
   for (; current && count < num; count++) {
-    assert(tls->result_buffers[current-1].type == buff_result_blank);
-    pbuffer_to_raw_buffer(&tls->result_buffers[current-1], buffers + count);
-    tls->result_buffers[current-1].type = buff_empty;
+    assert(tls->dresult_buffers[current-1].type == buff_dresult_decrypted);
+    pbuffer_to_raw_buffer(&tls->dresult_buffers[current-1], buffers + count);
+    tls->dresult_buffers[current-1].type = buff_empty;
 
     previous = current;
-    current = tls->result_buffers[current-1].next;
+    current = tls->dresult_buffers[current-1].next;
   }
   if (!count) return 0;
 
-  tls->result_buffers[previous-1].next = tls->result_first_empty;
-  tls->result_first_empty = tls->result_first_blank;
+  tls->dresult_buffers[previous-1].next = tls->dresult_first_empty;
+  tls->dresult_first_empty = tls->dresult_first_decrypted;
 
-  tls->result_first_blank = current;
-  tls->result_buffer_empty_count += count;
+  tls->dresult_first_decrypted = current;
+  if (!current) {
+    tls->dresult_last_decrypted = 0;
+  }
+  tls->dresult_empty_count += count;
+  tls->dresult_decrypted_count -= count;
   return count;
 }
 
-size_t pn_tls_decrypted_result(pn_tls_t *tls, pn_raw_buffer_t *buffers, size_t num) {
+size_t pn_tls_take_encrypted_result_buffers(pn_tls_t *tls, pn_raw_buffer_t *buffers, size_t num) {
   assert(tls);
   size_t count = 0;
 
-  buff_ptr current = tls->result_first_decrypted;
+  buff_ptr current = tls->eresult_first_encrypted;
   if (!current) return 0;
 
   buff_ptr previous;
   for (; current && count < num; count++) {
-    assert(tls->result_buffers[current-1].type == buff_result_decrypted);
-    pbuffer_to_raw_buffer(&tls->result_buffers[current-1], buffers + count);
-    tls->result_buffers[current-1].type = buff_empty;
+    assert(tls->eresult_buffers[current-1].type == buff_eresult_encrypted);
+    pbuffer_to_raw_buffer(&tls->eresult_buffers[current-1], buffers + count);
+    tls->eresult_buffers[current-1].type = buff_empty;
 
     previous = current;
-    current = tls->result_buffers[current-1].next;
+    current = tls->eresult_buffers[current-1].next;
   }
   if (!count) return 0;
 
-  tls->result_buffers[previous-1].next = tls->result_first_empty;
-  tls->result_first_empty = tls->result_first_decrypted;
+  tls->eresult_buffers[previous-1].next = tls->eresult_first_empty;
+  tls->eresult_first_empty = tls->eresult_first_encrypted;
 
-  tls->result_first_decrypted = current;
+  tls->eresult_first_encrypted = current;
   if (!current) {
-    tls->result_last_decrypted = 0;
+    tls->eresult_last_encrypted = 0;
   }
-  tls->result_buffer_empty_count += count;
-  tls->result_buffer_decrypted_count -= count;
-  return count;
-}
-
-size_t pn_tls_encrypted_result(pn_tls_t *tls, pn_raw_buffer_t *buffers, size_t num) {
-  assert(tls);
-  encrypt(tls);
-  size_t count = 0;
-
-  buff_ptr current = tls->result_first_encrypted;
-  if (!current) return 0;
-
-  buff_ptr previous;
-  for (; current && count < num; count++) {
-    assert(tls->result_buffers[current-1].type == buff_result_encrypted);
-    pbuffer_to_raw_buffer(&tls->result_buffers[current-1], buffers + count);
-    tls->result_buffers[current-1].type = buff_empty;
-
-    previous = current;
-    current = tls->result_buffers[current-1].next;
-  }
-  if (!count) return 0;
-
-  tls->result_buffers[previous-1].next = tls->result_first_empty;
-  tls->result_first_empty = tls->result_first_encrypted;
-
-  tls->result_first_encrypted = current;
-  if (!current) {
-    tls->result_last_encrypted = 0;
-  }
-  tls->result_buffer_empty_count += count;
-  tls->result_buffer_encrypted_count -= count;
+  tls->eresult_empty_count += count;
+  tls->eresult_encrypted_count -= count;
   return count;
 }
 
@@ -2006,46 +2021,52 @@ static pbuffer_t *next_decrypt_pending(pn_tls_t *tls) {
   return next;
 }
 
-static void blank_result_pop(pn_tls_t *tls, buff_ptr p) {
-  assert (p && p == tls->result_first_blank);  // From front only.
-  tls->result_first_blank = tls->result_buffers[p-1].next;
-  tls->result_buffers[p-1].next = 0;
+static void blank_eresult_pop(pn_tls_t *tls, buff_ptr p) {
+  assert (p && p == tls->eresult_first_blank);  // From front only.
+  tls->eresult_first_blank = tls->eresult_buffers[p-1].next;
+  tls->eresult_buffers[p-1].next = 0;
+}
+
+static void blank_dresult_pop(pn_tls_t *tls, buff_ptr p) {
+  assert (p && p == tls->dresult_first_blank);  // From front only.
+  tls->dresult_first_blank = tls->dresult_buffers[p-1].next;
+  tls->dresult_buffers[p-1].next = 0;
 }
 
 static void encrypted_result_add(pn_tls_t *tls, buff_ptr p) {
-  tls->result_buffers[p-1].type = buff_result_encrypted;
-  if (!tls->result_first_encrypted)
-    tls->result_first_encrypted = p;
-  if (tls->result_last_encrypted)
-    tls->result_buffers[tls->result_last_encrypted-1].next = p;
-  tls->result_last_encrypted = p;
-  tls->result_buffer_encrypted_count++;
+  tls->eresult_buffers[p-1].type = buff_eresult_encrypted;
+  if (!tls->eresult_first_encrypted)
+    tls->eresult_first_encrypted = p;
+  if (tls->eresult_last_encrypted)
+    tls->eresult_buffers[tls->eresult_last_encrypted-1].next = p;
+  tls->eresult_last_encrypted = p;
+  tls->eresult_encrypted_count++;
 }
 
 static void decrypted_result_add(pn_tls_t *tls, buff_ptr p) {
-  tls->result_buffers[p-1].type = buff_result_decrypted;
-  if (!tls->result_first_decrypted)
-    tls->result_first_decrypted = p;
-  if (tls->result_last_decrypted)
-    tls->result_buffers[tls->result_last_decrypted-1].next = p;
-  tls->result_last_decrypted = p;
-  tls->result_buffer_decrypted_count--;
+  tls->dresult_buffers[p-1].type = buff_dresult_decrypted;
+  if (!tls->dresult_first_decrypted)
+    tls->dresult_first_decrypted = p;
+  if (tls->dresult_last_decrypted)
+    tls->dresult_buffers[tls->dresult_last_decrypted-1].next = p;
+  tls->dresult_last_decrypted = p;
+  tls->dresult_decrypted_count--;
 }
 
 static buff_ptr current_encrypted_result(pn_tls_t *tls) {
-  buff_ptr p = tls->result_last_encrypted;
-  if (p && room(&tls->result_buffers[p-1]))
+  buff_ptr p = tls->eresult_last_encrypted;
+  if (p && room(&tls->eresult_buffers[p-1]))
     return p;  //  Has room so keep filling.
   // Otherwise, use a blank reult if available.
-  return tls->result_first_blank;
+  return tls->eresult_first_blank;
 }
 
 static buff_ptr current_decrypted_result(pn_tls_t *tls) {
-  buff_ptr p = tls->result_last_decrypted;
-  if (p && room(&tls->result_buffers[p-1]))
+  buff_ptr p = tls->dresult_last_decrypted;
+  if (p && room(&tls->dresult_buffers[p-1]))
     return p;  //  Has room so keep filling.
   // Otherwise, use a blank reult if available.
-  return tls->result_first_blank;
+  return tls->dresult_first_blank;
 }
 
 
@@ -2082,7 +2103,7 @@ static void encrypt(pn_tls_t *tls) {
 
     // Extract encrypted data from other side of BIO.
     while (curr_result && !tls->enc_rblocked) {
-      pbuffer_t *result = &tls->result_buffers[curr_result-1];
+      pbuffer_t *result = &tls->eresult_buffers[curr_result-1];
       size_t n = room(result);
       assert(n);
       int rcount = BIO_read(tls->bio_net_io, result->bytes + result->offset + result->size, n);
@@ -2093,14 +2114,14 @@ static void encrypt(pn_tls_t *tls) {
         tls->enc_wblocked = false;
         if (result->size == 0) {
           // first data inserted: convert from blank type to encrypted type
-          assert(result->type == buff_result_blank);
-          blank_result_pop(tls, curr_result);
+          assert(result->type == buff_eresult_blank);
+          blank_eresult_pop(tls, curr_result);
           encrypted_result_add(tls, curr_result);
         }
         result->size += rcount;
         if (room(result) == 0) {
           // Tentatively set a blank buffer for future output without popping.
-          curr_result = tls->result_first_blank;
+          curr_result = tls->eresult_first_blank;
         }
       } else if (!BIO_should_retry(tls->bio_ssl)) {
         int reason = SSL_get_error( tls->ssl, rcount );
@@ -2153,7 +2174,7 @@ static void decrypt(pn_tls_t *tls) {
 
     // Extract decrypted data from other side of filter chain.
     while (curr_result && !tls->dec_rblocked) {
-      pbuffer_t *result = &tls->result_buffers[curr_result-1];
+      pbuffer_t *result = &tls->dresult_buffers[curr_result-1];
       size_t n = room(result);
       assert(n);
       int rcount = BIO_read(tls->bio_ssl, result->bytes + result->offset + result->size, n);
@@ -2161,14 +2182,14 @@ static void decrypt(pn_tls_t *tls) {
         tls->dec_wblocked = false;
         if (result->size == 0) {
           // first data inserted: convert from blank type to encrypted type
-          assert(result->type == buff_result_blank);
-          blank_result_pop(tls, curr_result);
+          assert(result->type == buff_dresult_blank);
+          blank_dresult_pop(tls, curr_result);
           decrypted_result_add(tls, curr_result);
         }
         result->size += rcount;
         if (room(result) == 0) {
           // Tentatively set a blank buffer for future output without popping.
-          curr_result = tls->result_first_blank;
+          curr_result = tls->dresult_first_blank;
         }
       } else {
         if (!BIO_should_retry(tls->bio_ssl)) {
@@ -2201,4 +2222,33 @@ static void decrypt(pn_tls_t *tls) {
 
   if (!tls->can_encrypt && SSL_do_handshake(tls->ssl) == 1)
     tls->can_encrypt = true;
+}
+
+int pn_tls_process(pn_tls_t* tls) {
+  if (!tls->started || tls->stopped)
+    return PN_ARG_ERR;
+  decrypt(tls);  // First.  May generate handshake or other on encrypt side.
+  encrypt(tls);
+  // Error logic here please.
+  return 0;
+}
+
+bool pn_tls_need_encrypt_result_buffers(pn_tls_t* tls) {
+  if (tls && tls->started && tls->eresult_empty_count) {
+    if (!current_encrypted_result(tls)) {
+      // Existing result buffers all full.  Check if OpenSSL has data to read.
+      return (BIO_pending(tls->bio_net_io) > 0);
+    }
+  }
+  return false;
+}
+
+bool pn_tls_need_decrypt_result_buffers(pn_tls_t* tls) {
+  if (tls && tls->started && tls->dresult_empty_count) {
+    if (!current_decrypted_result(tls)) {
+      // Existing result buffers all full.  Check if OpenSSL has data to read.
+      return (BIO_pending(tls->bio_ssl) > 0);
+    }
+  }
+  return false;
 }
