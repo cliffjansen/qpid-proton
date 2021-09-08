@@ -279,18 +279,6 @@ PN_TLS_EXTERN int pn_tls_domain_set_ciphers(pn_tls_domain_t *domain, const char 
 PN_TLS_EXTERN int pn_tls_domain_allow_unsecured_client(pn_tls_domain_t *domain);
 
 /**
- * Create a new TLS session object derived from a domain and optional session_id.
- *
- * @param[in] domain the domain that configures the TLS session.
- * @param[in] session_id an opaque identifier of a previous TLS session domain that configures the TLS session.
- * @return a pointer to the TLS object.  Returns NULL memory allocation fails.
- */
-PN_TLS_EXTERN pn_tls_t *pn_tls_v1(pn_tls_domain_t *domain,
-                          const char *hostname,
-                          const char *session_id);
-
-
-/**
  * Create a new TLS session object derived from a domain.
  *
  * @param[in] domain the domain that configures the TLS session.
@@ -470,15 +458,6 @@ PN_TLS_EXTERN const char* pn_tls_get_remote_subject_subfield(pn_tls_t *tls, pn_t
 PN_TLS_EXTERN bool pn_tls_encrypted_pending(pn_tls_t *tls);
 PN_TLS_EXTERN bool pn_tls_decrypted_pending(pn_tls_t *tls);
 
-
-// return number of input buffers processed and encrypted buffers produced.  -1 if error.
-// unencrypted_buffers_in:  array of buffers to encrypt.  const values copied
-// encrypted destination_bufs (inout) array of buffers to hold encrypted data.  encrypted_destination_bufs[i].size updated.
-// Not all input buffers necessarily processed, but always complete buffers.
-PN_TLS_EXTERN ssize_t pn_tls_encrypt_v1(pn_tls_t *tls, pn_raw_buffer_t const *unencrypted_buffers_in, size_t in_count, pn_raw_buffer_t *encrypted_destination_bufs, size_t dest_count, size_t *dest_written);
-
-// return number of input buffers processed and decrypted buffers produced.  -1 if error.
-PN_TLS_EXTERN ssize_t pn_tls_decrypt_v1(pn_tls_t *tls, pn_raw_buffer_t const *encrypted_buffers_in, size_t in_count, pn_raw_buffer_t *decrypted_destination_bufs, size_t dest_count, size_t *dest_written);
 
 // True if peers have negotiated a TLS session.  False indicates handshake in progress.
 PN_TLS_EXTERN bool pn_tls_can_encrypt(pn_tls_t *tls);
