@@ -62,10 +62,10 @@
  */
 
 enum {
-  eresult_buffer_count = 4,
-  dresult_buffer_count = 4,
-  decrypt_buffer_count = 4,
-  encrypt_buffer_count = 4
+  eresult_buffer_default_count = 4,
+  dresult_buffer_default_count = 4,
+  decrypt_buffer_default_count = 4,
+  encrypt_buffer_default_count = 4
 };
 
 typedef enum {
@@ -125,17 +125,15 @@ struct pn_tls_domain_t {
   bool allow_unsecured;
 };
 
-// Our internal straggler buffer size.
-// TODO: make more robust or (better) switch to a model where the
-// TLS session takes ownership of output buffers until released
-// to application.  Stay tuned.
-#define JRSIZE    (4*1024)
-
 struct pn_tls_t {
-  pbuffer_t eresult_buffers[eresult_buffer_count];
-  pbuffer_t dresult_buffers[dresult_buffer_count];
-  pbuffer_t encrypt_buffers[encrypt_buffer_count];
-  pbuffer_t decrypt_buffers[decrypt_buffer_count];
+  pbuffer_t *eresult_buffers;
+  pbuffer_t *dresult_buffers;
+  pbuffer_t *encrypt_buffers;
+  pbuffer_t *decrypt_buffers;
+  size_t eresult_buffer_count;
+  size_t dresult_buffer_count;
+  size_t encrypt_buffer_count;
+  size_t decrypt_buffer_count;
 
   uint16_t encrypt_buffer_empty_count;
   uint16_t decrypt_buffer_empty_count;
@@ -206,6 +204,8 @@ struct pn_tls_t {
   bool can_encrypt;
   bool started;
   bool stopped;
+  bool validating;
+  const char *validate_error;
 
   char *subject;
   X509 *peer_certificate;
@@ -216,29 +216,158 @@ static void decrypt(pn_tls_t *);
 
 static void tls_initialize_buffers(pn_tls_t *tls) {
   // Link together free lists
-  for (buff_ptr i = 1; i<=encrypt_buffer_count; i++) {
-    tls->encrypt_buffers[i-1].next = i==encrypt_buffer_count ? 0 : i+1;
+  for (buff_ptr i = 1; i<=tls->encrypt_buffer_count; i++) {
+    tls->encrypt_buffers[i-1].next = i==tls->encrypt_buffer_count ? 0 : i+1;
     tls->encrypt_buffers[i-1].type = buff_empty;
-    tls->decrypt_buffers[i-1].next = i==decrypt_buffer_count ? 0 : i+1;
+  }
+  for (buff_ptr i = 1; i<=tls->decrypt_buffer_count; i++) {
+    tls->decrypt_buffers[i-1].next = i==tls->decrypt_buffer_count ? 0 : i+1;
     tls->decrypt_buffers[i-1].type = buff_empty;
   }
-
-  for (buff_ptr i = 1; i<=eresult_buffer_count; i++) {
-    tls->eresult_buffers[i-1].next = i==eresult_buffer_count ? 0 : i+1;
+  for (buff_ptr i = 1; i<=tls->eresult_buffer_count; i++) {
+    tls->eresult_buffers[i-1].next = i==tls->eresult_buffer_count ? 0 : i+1;
     tls->eresult_buffers[i-1].type = buff_empty;
-    tls->dresult_buffers[i-1].next = i==eresult_buffer_count ? 0 : i+1;
+  }
+  for (buff_ptr i = 1; i<=tls->dresult_buffer_count; i++) {
+    tls->dresult_buffers[i-1].next = i==tls->dresult_buffer_count ? 0 : i+1;
     tls->dresult_buffers[i-1].type = buff_empty;
   }
 
-  tls->encrypt_buffer_empty_count = encrypt_buffer_count;
-  tls->decrypt_buffer_empty_count = decrypt_buffer_count;
-  tls->eresult_empty_count = eresult_buffer_count;
-  tls->dresult_empty_count = dresult_buffer_count;
+  tls->encrypt_buffer_empty_count = tls->encrypt_buffer_count;
+  tls->decrypt_buffer_empty_count = tls->decrypt_buffer_count;
+  tls->eresult_empty_count = tls->eresult_buffer_count;
+  tls->dresult_empty_count = tls->dresult_buffer_count;
 
   tls->eresult_first_empty = 1;
   tls->dresult_first_empty = 1;
   tls->encrypt_first_empty = 1;
   tls->decrypt_first_empty = 1;
+}
+
+bool pni_tls_validate(pn_tls_t *tls) {
+  // encrypt input buffers:  empty + 2 ordered sublists
+  tls->validate_error = "encrypt empty list";
+  size_t e_empty_count = 0;
+  for (buff_ptr i = tls->encrypt_first_empty; i; i = tls->encrypt_buffers[i-1].next) {
+    if (tls->encrypt_buffers[i-1].type != buff_empty) return false;
+    e_empty_count++;
+  }
+  if (e_empty_count != tls->encrypt_buffer_empty_count) return false;
+  tls->validate_error = "encrypt pending list";
+  size_t e_pending_count = 0;
+  for (buff_ptr i = tls->encrypt_first_pending; i; i = tls->encrypt_buffers[i-1].next) {
+    if (tls->encrypt_buffers[i-1].type != buff_encrypt_pending) return false;
+    e_pending_count++;
+  }
+  tls->validate_error = "encrypt done list";
+  size_t e_done_count = 0;
+  for (buff_ptr i = tls->encrypt_first_done; i; i = tls->encrypt_buffers[i-1].next) {
+    if (tls->encrypt_buffers[i-1].type != buff_encrypt_done) return false;
+    e_done_count++;
+  }
+  tls->validate_error = "encrypt pointers and counts";
+  if (e_empty_count+e_pending_count+e_done_count != tls->encrypt_buffer_count) return false;
+  if (!tls->encrypt_first_pending && tls->encrypt_last_pending) return false;
+  if (tls->encrypt_last_pending &&
+    (tls->encrypt_buffers[tls->encrypt_last_pending-1].type != buff_encrypt_pending || tls->encrypt_buffers[tls->encrypt_last_pending-1].next != 0)) return false;
+  if (!tls->encrypt_first_done && tls->encrypt_last_done) return false;
+  if (tls->encrypt_last_done &&
+    (tls->encrypt_buffers[tls->encrypt_last_done-1].type != buff_encrypt_done || tls->encrypt_buffers[tls->encrypt_last_done-1].next != 0)) return false;
+
+  // decrypt input buffers:  empty + 2 ordered sublists
+  tls->validate_error = "decrypt empty list";
+  size_t d_empty_count = 0;
+  for (buff_ptr i = tls->decrypt_first_empty; i; i = tls->decrypt_buffers[i-1].next) {
+    if (tls->decrypt_buffers[i-1].type != buff_empty) return false;
+    d_empty_count++;
+  }
+  if (d_empty_count != tls->decrypt_buffer_empty_count) return false;
+  tls->validate_error = "decrypt pending list";
+  size_t d_pending_count = 0;
+  for (buff_ptr i = tls->decrypt_first_pending; i; i = tls->decrypt_buffers[i-1].next) {
+    if (tls->decrypt_buffers[i-1].type != buff_decrypt_pending) return false;
+    d_pending_count++;
+  }
+  tls->validate_error = "decrypt done list";
+  size_t d_done_count = 0;
+  for (buff_ptr i = tls->decrypt_first_done; i; i = tls->decrypt_buffers[i-1].next) {
+    if (tls->decrypt_buffers[i-1].type != buff_decrypt_done) return false;
+    d_done_count++;
+  }
+  tls->validate_error = "decrypt pointers and counts";
+  if (d_empty_count+d_pending_count+d_done_count != tls->decrypt_buffer_count) return false;
+  if (!tls->decrypt_first_pending && tls->decrypt_last_pending) return false;
+  if (tls->decrypt_last_pending &&
+    (tls->decrypt_buffers[tls->decrypt_last_pending-1].type != buff_decrypt_pending || tls->decrypt_buffers[tls->decrypt_last_pending-1].next != 0)) return false;
+  if (!tls->decrypt_first_done && tls->decrypt_last_done) return false;
+  if (tls->decrypt_last_done &&
+    (tls->decrypt_buffers[tls->decrypt_last_done-1].type != buff_decrypt_done || tls->decrypt_buffers[tls->decrypt_last_done-1].next != 0)) return false;
+
+  // encrypt result buffers:  empty + unordered blank + ordered "encrypted"
+  tls->validate_error = "eresult empty list";
+  size_t e_r_empty_count = 0;
+  for (buff_ptr i = tls->eresult_first_empty; i; i = tls->eresult_buffers[i-1].next) {
+    if (tls->eresult_buffers[i-1].type != buff_empty) return false;
+    e_r_empty_count++;
+  }
+  if (e_r_empty_count != tls->eresult_empty_count) return false;
+  tls->validate_error = "eresult blank list";
+  size_t e_blank_count = 0;
+  for (buff_ptr i = tls->eresult_first_blank; i; i = tls->eresult_buffers[i-1].next) {
+    if (tls->eresult_buffers[i-1].type != buff_eresult_blank) return false;
+    e_blank_count++;
+  }
+  tls->validate_error = "eresult encrypted list";
+  size_t e_encrypted_count = 0;
+  for (buff_ptr i = tls->eresult_first_encrypted; i; i = tls->eresult_buffers[i-1].next) {
+    if (tls->eresult_buffers[i-1].type != buff_eresult_encrypted) return false;
+    e_encrypted_count++;
+  }
+  if (e_encrypted_count != tls->eresult_encrypted_count) return false;
+  tls->validate_error = "encrypt pointers and counts";
+  if (e_r_empty_count+e_blank_count+e_encrypted_count != tls->eresult_buffer_count) return false;
+  if (!tls->eresult_first_encrypted && tls->eresult_last_encrypted) return false;
+  if (tls->eresult_last_encrypted &&
+    (tls->eresult_buffers[tls->eresult_last_encrypted-1].type != buff_eresult_encrypted || tls->eresult_buffers[tls->eresult_last_encrypted-1].next != 0)) return false;
+
+  // decrypt result buffers:  empty + unordered blank + ordered "decrypted"
+  tls->validate_error = "dresult empty list";
+  size_t d_r_empty_count = 0;
+  for (buff_ptr i = tls->dresult_first_empty; i; i = tls->dresult_buffers[i-1].next) {
+    if (tls->dresult_buffers[i-1].type != buff_empty) return false;
+    d_r_empty_count++;
+  }
+  if (d_r_empty_count != tls->dresult_empty_count) return false;
+  tls->validate_error = "dresult blank list";
+  size_t d_blank_count = 0;
+  for (buff_ptr i = tls->dresult_first_blank; i; i = tls->dresult_buffers[i-1].next) {
+    if (tls->dresult_buffers[i-1].type != buff_dresult_blank) return false;
+    d_blank_count++;
+  }
+  tls->validate_error = "dresult decrypted list";
+  size_t d_decrypted_count = 0;
+  for (buff_ptr i = tls->dresult_first_decrypted; i; i = tls->dresult_buffers[i-1].next) {
+    if (tls->dresult_buffers[i-1].type != buff_dresult_decrypted) return false;
+    d_decrypted_count++;
+  }
+  if (d_decrypted_count != tls->dresult_decrypted_count) return false;
+  tls->validate_error = "decrypt pointers and counts";
+  if (d_r_empty_count+d_blank_count+d_decrypted_count != tls->dresult_buffer_count) return false;
+  if (!tls->dresult_first_decrypted && tls->dresult_last_decrypted) return false;
+  if (tls->dresult_last_decrypted &&
+    (tls->dresult_buffers[tls->dresult_last_decrypted-1].type != buff_dresult_decrypted || tls->dresult_buffers[tls->dresult_last_decrypted-1].next != 0)) return false;
+
+
+  tls->validate_error = NULL;
+  return true;
+}
+
+static void fatal_on_error(pn_tls_t *tls) {
+  if (!pni_tls_validate(tls)) {
+    fprintf(stderr, "TLS internal validation error: %s", tls->validate_error);
+    fflush(stderr);
+    abort();
+  }
 }
 
 size_t pn_tls_encrypt_input_buffers_capacity(pn_tls_t *tls) { return tls->encrypt_buffer_empty_count; }
@@ -925,6 +1054,7 @@ void pn_tls_free(pn_tls_t *ssl)
   if (ssl->q4enc_bytes) free((void *)ssl->q4enc_bytes);
   if (ssl->subject) free(ssl->subject);
   if (ssl->peer_certificate) X509_free(ssl->peer_certificate);
+  if (ssl->eresult_buffers) free(ssl->eresult_buffers);
   free(ssl);
 }
 
@@ -940,7 +1070,6 @@ static int pni_tls_init(pn_tls_t *ssl, pn_tls_domain_t *domain, const char *unus
   // TODO: This is a probably a stop-gap until allow_unsecured is removed
   //  if (!domain->allow_unsecured) transport->encryption_required = true;
 
-  tls_initialize_buffers(ssl);
   return init_ssl_socket(ssl, domain);
 }
 
@@ -949,13 +1078,33 @@ pn_tls_t *pn_tls(pn_tls_domain_t *domain) {
   pn_tls_t *tls = (pn_tls_t *) calloc(1, sizeof(pn_tls_t));
   if (!tls) return NULL;
   tls->domain = domain;
-
+  const char *env = getenv("PN_TLS_DBG");
+  if (env && *env == '1') tls->validating = true;
   return tls;
 }
 
 int pn_tls_start(pn_tls_t *tls) {
   if (tls->started)
     return PN_ARG_ERR;
+  if (!tls->eresult_buffer_count)
+    tls->eresult_buffer_count = eresult_buffer_default_count;
+  if (!tls->dresult_buffer_count)
+    tls->dresult_buffer_count = dresult_buffer_default_count;
+  if (!tls->encrypt_buffer_count)
+    tls->encrypt_buffer_count = encrypt_buffer_default_count;
+  if (!tls->decrypt_buffer_count)
+    tls->decrypt_buffer_count = decrypt_buffer_default_count;
+  // Allocate all four in one go.
+  size_t count = tls->eresult_buffer_count + tls->dresult_buffer_count + tls->encrypt_buffer_count + tls->decrypt_buffer_count;
+  tls->eresult_buffers = calloc(count, sizeof(pbuffer_t));
+  if (!tls->eresult_buffers)
+    return PN_OUT_OF_MEMORY;
+  tls->dresult_buffers = tls->eresult_buffers + tls->eresult_buffer_count;
+  tls->encrypt_buffers = tls->dresult_buffers + tls->dresult_buffer_count;
+  tls->decrypt_buffers = tls->encrypt_buffers + tls->encrypt_buffer_count;
+
+  tls_initialize_buffers(tls);
+
   tls->started = true;
   return pni_tls_init(tls, tls->domain, tls->session_id);
 }
@@ -1473,6 +1622,7 @@ size_t pn_tls_give_encrypt_input_buffers(pn_tls_t* tls, pn_raw_buffer_t const* b
   tls->encrypt_first_empty = current;
 
   tls->encrypt_buffer_empty_count -= can_take;
+  if (tls->validating) fatal_on_error(tls);
   return can_take;
 }
 
@@ -1506,6 +1656,7 @@ size_t pn_tls_give_decrypt_input_buffers(pn_tls_t* tls, pn_raw_buffer_t const* b
   tls->decrypt_first_empty = current;
 
   tls->decrypt_buffer_empty_count -= can_take;
+  if (tls->validating) fatal_on_error(tls);
   return can_take;
 }
 
@@ -1532,6 +1683,7 @@ size_t pn_tls_give_encrypt_result_buffers(pn_tls_t* tls, pn_raw_buffer_t const* 
   tls->eresult_first_empty = current;
 
   tls->eresult_empty_count -= can_take;
+  if (tls->validating) fatal_on_error(tls);
   return can_take;
 }
 
@@ -1558,6 +1710,7 @@ size_t pn_tls_give_decrypt_result_buffers(pn_tls_t* tls, pn_raw_buffer_t const* 
   tls->dresult_first_empty = current;
 
   tls->dresult_empty_count -= can_take;
+  if (tls->validating) fatal_on_error(tls);
   return can_take;
 }
 
@@ -1587,6 +1740,7 @@ size_t pn_tls_take_decrypt_input_buffers(pn_tls_t *tls, pn_raw_buffer_t *buffers
     tls->decrypt_last_done = 0;
   }
   tls->decrypt_buffer_empty_count += count;
+  if (tls->validating) fatal_on_error(tls);
   return count;
 }
 
@@ -1616,6 +1770,7 @@ size_t pn_tls_take_encrypt_input_buffers(pn_tls_t *tls, pn_raw_buffer_t *buffers
     tls->encrypt_last_done = 0;
   }
   tls->encrypt_buffer_empty_count += count;
+  if (tls->validating) fatal_on_error(tls);
   return count;
 }
 
@@ -1646,6 +1801,7 @@ size_t pn_tls_take_decrypted_result_buffers(pn_tls_t *tls, pn_raw_buffer_t *buff
   }
   tls->dresult_empty_count += count;
   tls->dresult_decrypted_count -= count;
+  if (tls->validating) fatal_on_error(tls);
   return count;
 }
 
@@ -1676,6 +1832,7 @@ size_t pn_tls_take_encrypted_result_buffers(pn_tls_t *tls, pn_raw_buffer_t *buff
   }
   tls->eresult_empty_count += count;
   tls->eresult_encrypted_count -= count;
+  if (tls->validating) fatal_on_error(tls);
   return count;
 }
 
@@ -1768,7 +1925,7 @@ static void decrypted_result_add(pn_tls_t *tls, buff_ptr p) {
   if (tls->dresult_last_decrypted)
     tls->dresult_buffers[tls->dresult_last_decrypted-1].next = p;
   tls->dresult_last_decrypted = p;
-  tls->dresult_decrypted_count--;
+  tls->dresult_decrypted_count++;
 }
 
 static buff_ptr current_encrypted_result(pn_tls_t *tls) {
@@ -1946,7 +2103,9 @@ int pn_tls_process(pn_tls_t* tls) {
   if (!tls->started || tls->stopped)
     return PN_ARG_ERR;
   decrypt(tls);  // First.  May generate handshake or other on encrypt side.
+  if (tls->validating) fatal_on_error(tls);
   encrypt(tls);
+  if (tls->validating) fatal_on_error(tls);
   // Error logic here please.
   return 0;
 }
@@ -1969,4 +2128,17 @@ bool pn_tls_need_decrypt_result_buffers(pn_tls_t* tls) {
     }
   }
   return false;
+}
+
+void pn_tls_set_encrypt_input_buffer_max_capacity(pn_tls_t *tls, size_t s) {
+  if (!tls->started) tls->encrypt_buffer_count = s;
+}
+void pn_tls_set_decrypt_input_buffer_max_capacity(pn_tls_t *tls, size_t s) {
+  if (!tls->started) tls->decrypt_buffer_count = s;
+}
+void pn_tls_set_encrypt_result_buffer_max_capacity(pn_tls_t *tls, size_t s) {
+  if (!tls->started) tls->eresult_buffer_count = s;
+}
+void pn_tls_set_decrypt_result_buffer_max_capacity(pn_tls_t *tls, size_t s) {
+  if (!tls->started) tls->dresult_buffer_count = s;
 }
