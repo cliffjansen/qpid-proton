@@ -1462,7 +1462,7 @@ const char* pn_tls_get_remote_subject_subfield(pn_tls_t *ssl, pn_tls_cert_subjec
 bool pn_tls_encrypted_pending(pn_tls_t *tls)
 {
   if (tls && tls->started) {
-    return tls->eresult_first_encrypted;
+    return tls->eresult_first_encrypted || pn_tls_need_encrypt_result_buffers(tls);
   }
   return 0;
 }
@@ -1470,7 +1470,7 @@ bool pn_tls_encrypted_pending(pn_tls_t *tls)
 bool pn_tls_decrypted_pending(pn_tls_t *tls)
 {
   if (tls && tls->started) {
-    return tls->dresult_first_decrypted;
+    return tls->dresult_first_decrypted || pn_tls_need_decrypt_result_buffers(tls);
   }
   return 0;
 }
