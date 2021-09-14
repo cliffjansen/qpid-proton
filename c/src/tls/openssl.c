@@ -182,13 +182,13 @@ struct pn_tls_t {
   BIO *bio_ssl_io;      // SSL "half" of network-facing BIO
   BIO *bio_net_io;      // socket-side "half" of network-facing BIO
   // buffers for holding unprocessed bytes to be en/decoded when BIO is able to process them.
-  char *q4enc_bytes;
+  char *q4enc_bytes; // ZZZ
   char *q4dec_bytes;
 
   ssize_t app_input_closed;   // error code returned by upper layer process input
   ssize_t app_output_closed;  // error code returned by upper layer process output
 
-  uint32_t q4enc_capacity;
+  uint32_t q4enc_capacity; // ZZZ
   uint32_t q4enc_size;
   uint32_t q4dec_capacity;
   uint32_t q4dec_size;
@@ -1948,7 +1948,6 @@ static buff_ptr current_decrypted_result(pn_tls_t *tls) {
 static void encrypt(pn_tls_t *tls) {
   assert(tls);
   buff_ptr curr_result = current_encrypted_result(tls);
-  if (!curr_result) return;  // No where to place encrypted data
   pbuffer_t *pending = next_encrypt_pending(tls);
   bool shutdown_input = false;  // TODO: missing close() call?
     
@@ -2024,7 +2023,6 @@ static void encrypt(pn_tls_t *tls) {
 static void decrypt(pn_tls_t *tls) {
   assert(tls);
   buff_ptr curr_result = current_decrypted_result(tls);
-  if (!curr_result) return;  // No where to place decrypted data
   pbuffer_t *pending = next_decrypt_pending(tls);
 
   while (true) {
@@ -2095,6 +2093,7 @@ static void decrypt(pn_tls_t *tls) {
       break;
   }
 
+  // SSL_do_handshake() to see if handshaking is done but also to force handshake bytes into the BIO.
   if (!tls->can_encrypt && SSL_do_handshake(tls->ssl) == 1)
     tls->can_encrypt = true;
 }

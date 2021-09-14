@@ -1,13 +1,6 @@
-raw_plus_tls.c : existing API based example that bolts TLS processing
+raw_plus_tls.c : new API based example that bolts TLS processing
 on top of an application that uses pn_raw_connection_t IO.  TBD:
 proper error handling and tracing, sessions, perhaps close/shutdown.
 
-sketch.h : a rough sketch of an alternate API provided by Andrew
-Stitcher.  One main difference is that this API allows the pn_tls_t
-instance to temporarily own raw buffers.  The advantage is that the
-instance now does no self buffering other than via the buffers
-provided by the application.  Also, encrypt and decrypt operations do
-not require managing "equal enough" sets of input and output buffers.
-Instead you put in a bunch of raw buffers to be processed and later
-extract the result buffers (based on prior or subsequent supply of
-result buffers).
+raw_plus_tls2.c : same program, but frugal with result buffers.
+
