@@ -182,16 +182,9 @@ struct pn_tls_t {
   BIO *bio_ssl_io;      // SSL "half" of network-facing BIO
   BIO *bio_net_io;      // socket-side "half" of network-facing BIO
   // buffers for holding unprocessed bytes to be en/decoded when BIO is able to process them.
-  char *q4enc_bytes; // ZZZ
-  char *q4dec_bytes;
 
   ssize_t app_input_closed;   // error code returned by upper layer process input
   ssize_t app_output_closed;  // error code returned by upper layer process output
-
-  uint32_t q4enc_capacity; // ZZZ
-  uint32_t q4enc_size;
-  uint32_t q4dec_capacity;
-  uint32_t q4dec_size;
 
   bool ssl_shutdown;    // BIO_ssl_shutdown() called on socket.
   bool ssl_closed;      // shutdown complete, or SSL error
@@ -1050,8 +1043,6 @@ void pn_tls_free(pn_tls_t *ssl)
   release_ssl_socket( ssl );
   if (ssl->session_id) free((void *)ssl->session_id);
   if (ssl->peer_hostname) free((void *)ssl->peer_hostname);
-  if (ssl->q4dec_bytes) free((void *)ssl->q4dec_bytes);
-  if (ssl->q4enc_bytes) free((void *)ssl->q4enc_bytes);
   if (ssl->subject) free(ssl->subject);
   if (ssl->peer_certificate) X509_free(ssl->peer_certificate);
   if (ssl->eresult_buffers) free(ssl->eresult_buffers);
