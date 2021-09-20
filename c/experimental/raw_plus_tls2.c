@@ -206,7 +206,7 @@ static void handle_outgoing(jabber_connection_t* jc) {
 
     if (pn_tls_can_encrypt(jc->tls)) {
       // Add jabber data if there is room.
-      size_t max_bufs_to_encrypt = size_t_min(4, pn_tls_encrypt_input_buffers_capacity(jc->tls));
+      size_t max_bufs_to_encrypt = size_t_min(4, pn_tls_get_encrypt_input_buffer_capacity(jc->tls));
       if (max_bufs_to_encrypt) {
         pn_raw_buffer_t unencrypted_buffers[4];
         rbuf_pool_get(unencrypted_buffers, max_bufs_to_encrypt);
@@ -223,14 +223,14 @@ static void handle_outgoing(jabber_connection_t* jc) {
     pn_tls_process(jc->tls); // TODO:err check
     for ( ; wire_buf_count < 4
            && pn_raw_connection_write_buffers_capacity(jc->rawc) > (wire_buf_count)
-           && pn_tls_need_encrypt_result_buffers(jc->tls) ;
+           && pn_tls_need_encrypt_output_buffers(jc->tls) ;
          wire_buf_count++ ) {
 
       rbuf_pool_get(&rbuf, 1);
-      assert(pn_tls_encrypt_result_buffers_capacity(jc->tls) > 0);
-      pn_tls_give_encrypt_result_buffers(jc->tls, &rbuf, 1);
+      assert(pn_tls_get_encrypt_output_buffer_capacity(jc->tls) > 0);
+      pn_tls_give_encrypt_output_buffers(jc->tls, &rbuf, 1);
       pn_tls_process(jc->tls);  // Use the added result buffer
-      if (pn_tls_take_encrypted_result_buffers(jc->tls, wire_buffers + wire_buf_count, 1) != 1)
+      if (pn_tls_take_encrypt_output_buffers(jc->tls, wire_buffers + wire_buf_count, 1) != 1)
         abort();
     }
 
@@ -239,7 +239,7 @@ static void handle_outgoing(jabber_connection_t* jc) {
       rbuf_pool_return(&rbuf);
 
     // Remember whether we missed some output buffered in the TLS library and need to come back.
-    jc->tls_has_output = pn_tls_encrypted_pending(jc->tls) > 0;
+    jc->tls_has_output = pn_tls_get_encrypt_output_pending(jc->tls) > 0;
   }
 
   if (pn_raw_connection_write_buffers(jc->rawc, wire_buffers, wire_buf_count) != wire_buf_count)
@@ -256,8 +256,8 @@ static void handle_incoming(jabber_connection_t* jc) {
     int max_bufs = 4;
     if (jc->tls) {
       // Don't read more buffers than the TLS lib will accept.
-      if (max_bufs > pn_tls_decrypt_input_buffers_capacity(jc->tls))
-        max_bufs = pn_tls_decrypt_input_buffers_capacity(jc->tls);
+      if (max_bufs > pn_tls_get_decrypt_input_buffer_capacity(jc->tls))
+        max_bufs = pn_tls_get_decrypt_input_buffer_capacity(jc->tls);
     }
 
     size_t buf_count = pn_raw_connection_take_read_buffers(jc->rawc, wire_buffers, max_bufs);
@@ -284,12 +284,12 @@ static void handle_incoming(jabber_connection_t* jc) {
         if (consumed != buf_count) abort();  // Should never happen if we counted correctly.
         pn_tls_process(jc->tls);
 
-        while (pn_tls_need_decrypt_result_buffers(jc->tls)) {
+        while (pn_tls_need_decrypt_output_buffers(jc->tls)) {
           rbuf_pool_get(&rbuf, 1);
-          assert(pn_tls_decrypt_result_buffers_capacity(jc->tls) > 0);
-          pn_tls_give_decrypt_result_buffers(jc->tls, &rbuf, 1);
+          assert(pn_tls_get_decrypt_output_buffer_capacity(jc->tls) > 0);
+          pn_tls_give_decrypt_output_buffers(jc->tls, &rbuf, 1);
           pn_tls_process(jc->tls);  // Use the added result buffer
-          size_t decrypted_count = pn_tls_take_decrypted_result_buffers(jc->tls, &rbuf, 1);
+          size_t decrypted_count = pn_tls_take_decrypt_output_buffers(jc->tls, &rbuf, 1);
           if (decrypted_count != 1)
             abort();
           gobble_jabber(jc, &rbuf); // buffer ownership transferred to application
@@ -300,7 +300,7 @@ static void handle_incoming(jabber_connection_t* jc) {
           rbuf_pool_return(&rbuf);
 
         // TLS input can generate non-application output.  Note that here.
-        jc->tls_has_output = pn_tls_encrypted_pending(jc->tls) > 0;
+        jc->tls_has_output = pn_tls_get_encrypt_output_pending(jc->tls) > 0;
       }
 
     }
@@ -383,9 +383,9 @@ static bool handle_raw_connection(jabber_connection_t* jc, pn_event_t* event) {
         pn_tls_stop(jc->tls);
         pn_raw_buffer_t rb;
         // recycle unused result buffers, released by pn_tls_stop()
-        while (pn_tls_take_encrypted_result_buffers(jc->tls, &rb, 1) == 1)
+        while (pn_tls_take_encrypt_output_buffers(jc->tls, &rb, 1) == 1)
           rbuf_pool_return(&rb);
-        while (pn_tls_take_decrypted_result_buffers(jc->tls, &rb, 1) == 1)
+        while (pn_tls_take_decrypt_output_buffers(jc->tls, &rb, 1) == 1)
           rbuf_pool_return(&rb);
         free(jc->tls);
         jc->tls = NULL;

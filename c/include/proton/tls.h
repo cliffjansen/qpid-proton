@@ -466,8 +466,8 @@ PN_TLS_EXTERN int pn_tls_get_cert_fingerprint(pn_tls_t *tls0,
  */
 PN_TLS_EXTERN const char* pn_tls_get_remote_subject_subfield(pn_tls_t *tls, pn_tls_cert_subject_subfield field);
 
-PN_TLS_EXTERN bool pn_tls_encrypted_pending(pn_tls_t *tls);
-PN_TLS_EXTERN bool pn_tls_decrypted_pending(pn_tls_t *tls);
+PN_TLS_EXTERN bool pn_tls_get_encrypt_output_pending(pn_tls_t *tls);
+PN_TLS_EXTERN bool pn_tls_get_decrypt_output_pending(pn_tls_t *tls);
 
 
 // True if peers have negotiated a TLS session.  False indicates handshake in progress.
@@ -482,15 +482,15 @@ PN_TLS_EXTERN bool pn_tls_can_encrypt(pn_tls_t *tls);
 // Give buffers to store encryption/decryption results
 // returns the number of buffers taken - it's possible that we don't have space
 // to record all of them
-PN_TLS_EXTERN size_t pn_tls_give_encrypt_result_buffers(pn_tls_t*, pn_raw_buffer_t const*, size_t count);
-PN_TLS_EXTERN size_t pn_tls_give_decrypt_result_buffers(pn_tls_t*, pn_raw_buffer_t const*, size_t count);
+PN_TLS_EXTERN size_t pn_tls_give_encrypt_output_buffers(pn_tls_t*, pn_raw_buffer_t const*, size_t count);
+PN_TLS_EXTERN size_t pn_tls_give_decrypt_output_buffers(pn_tls_t*, pn_raw_buffer_t const*, size_t count);
 
 
 // Take result buffers back into app ownership, return the actual number of buffers returned
 // keep calling these until the number returned is 0 to make sure you get all buffers currently available
 // Gives only buffers with encrypted/decrypted content before pn_tls_stop() and all buffers afterwards.
-PN_TLS_EXTERN size_t pn_tls_take_decrypted_result_buffers(pn_tls_t*, pn_raw_buffer_t*, size_t count);
-PN_TLS_EXTERN size_t pn_tls_take_encrypted_result_buffers(pn_tls_t*, pn_raw_buffer_t*, size_t count);
+PN_TLS_EXTERN size_t pn_tls_take_decrypt_output_buffers(pn_tls_t*, pn_raw_buffer_t*, size_t count);
+PN_TLS_EXTERN size_t pn_tls_take_encrypt_output_buffers(pn_tls_t*, pn_raw_buffer_t*, size_t count);
 
 // Stage data to be encrypted by the engine at a future pn_tls_process() step.
 // returned value is number of buffers taken (ownership transfer)
@@ -507,31 +507,31 @@ PN_TLS_EXTERN size_t pn_tls_take_encrypt_input_buffers(pn_tls_t*, pn_raw_buffer_
 PN_TLS_EXTERN size_t pn_tls_take_decrypt_input_buffers(pn_tls_t*, pn_raw_buffer_t*, size_t count);
 
 // Return the max number of additional input buffers we can hold
-PN_TLS_EXTERN size_t pn_tls_encrypt_input_buffers_capacity(pn_tls_t*);
-PN_TLS_EXTERN size_t pn_tls_decrypt_input_buffers_capacity(pn_tls_t*);
+PN_TLS_EXTERN size_t pn_tls_get_encrypt_input_buffer_capacity(pn_tls_t*);
+PN_TLS_EXTERN size_t pn_tls_get_decrypt_input_buffer_capacity(pn_tls_t*);
 
 // True if there is no remaining space in the XXcrypt result buffers owned by the
 // engine and there is XXcryped data available to put in a result buffer since
 // the last pn_tls_process()
-PN_TLS_EXTERN bool pn_tls_need_encrypt_result_buffers(pn_tls_t*);
-PN_TLS_EXTERN bool pn_tls_need_decrypt_result_buffers(pn_tls_t*);
+PN_TLS_EXTERN bool pn_tls_need_encrypt_output_buffers(pn_tls_t*);
+PN_TLS_EXTERN bool pn_tls_need_decrypt_output_buffers(pn_tls_t*);
 
-PN_TLS_EXTERN size_t pn_tls_encrypt_result_buffers_capacity(pn_tls_t*);
-PN_TLS_EXTERN size_t pn_tls_decrypt_result_buffers_capacity(pn_tls_t*);
+PN_TLS_EXTERN size_t pn_tls_get_encrypt_output_buffer_capacity(pn_tls_t*);
+PN_TLS_EXTERN size_t pn_tls_get_decrypt_output_buffer_capacity(pn_tls_t*);
 
 // Number of buffers ready to be returned by take operation since last pn_tls_process() or pn_tls_stop()
-PN_TLS_EXTERN size_t pn_tls_decrypted_result_count(pn_tls_t*);
-PN_TLS_EXTERN size_t pn_tls_encrypted_result_count(pn_tls_t*);
+PN_TLS_EXTERN size_t pn_tls_get_decrypt_output_buffer_count(pn_tls_t*);
+PN_TLS_EXTERN size_t pn_tls_get_encrypt_output_buffer_count(pn_tls_t*);
 
-PN_TLS_EXTERN uint32_t pn_tls_last_decrypted_buffer_size(pn_tls_t*);
-PN_TLS_EXTERN uint32_t pn_tls_last_encrypted_buffer_size(pn_tls_t*);
+PN_TLS_EXTERN uint32_t pn_tls_get_last_decrypt_output_buffer_size(pn_tls_t*);
+PN_TLS_EXTERN uint32_t pn_tls_get_last_encrypt_output_buffer_size(pn_tls_t*);
 
 
 // Configurable.  Zero implies "use default".  No effect after pn_tls_start().
 PN_TLS_EXTERN void pn_tls_set_encrypt_input_buffer_max_capacity(pn_tls_t*, size_t s);
 PN_TLS_EXTERN void pn_tls_set_decrypt_input_buffer_max_capacity(pn_tls_t*, size_t s);
-PN_TLS_EXTERN void pn_tls_set_encrypt_result_buffer_max_capacity(pn_tls_t*, size_t s);
-PN_TLS_EXTERN void pn_tls_set_decrypt_result_buffer_max_capacity(pn_tls_t*, size_t s);
+PN_TLS_EXTERN void pn_tls_set_encrypt_output_buffer_max_capacity(pn_tls_t*, size_t s);
+PN_TLS_EXTERN void pn_tls_set_decrypt_output_buffer_max_capacity(pn_tls_t*, size_t s);
 
 // Process as much unencrypted data to encrypted result data as possible.
 // Also process as much undecrypted data to decryptedcrypted result data as possible.
@@ -555,7 +555,7 @@ PN_TLS_EXTERN int pn_tls_write_close(pn_tls_t* tls);
 
 // If non-zero the TLS session was unable to start or was aborted.  The application should
 // stop all read activity, and take all remaining encrypted content and write it onto the
-// connection (i.e. until pn_tls_encrypted_pending() is false), then close the associated
+// connection (i.e. until pn_tls_get_encrypt_output_pending() is false), then close the associated
 // connection.  Specific return values TBD (INIT_FAILED, BAD_AUTH, TLS_PROTOCOL_ERROR, ...).
 PN_TLS_EXTERN int pn_tls_get_last_session_error(pn_tls_t* tls);
 

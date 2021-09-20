@@ -370,25 +370,25 @@ static void fatal_on_error(pn_tls_t *tls) {
   }
 }
 
-size_t pn_tls_encrypt_input_buffers_capacity(pn_tls_t *tls) { return tls->encrypt_buffer_empty_count; }
-size_t pn_tls_decrypt_input_buffers_capacity(pn_tls_t *tls) { return tls->decrypt_buffer_empty_count; }
-size_t pn_tls_encrypt_result_buffers_capacity(pn_tls_t *tls) { return tls->eresult_empty_count; }
-size_t pn_tls_decrypt_result_buffers_capacity(pn_tls_t *tls) { return tls->dresult_empty_count; }
+size_t pn_tls_get_encrypt_input_buffer_capacity(pn_tls_t *tls) { return tls->encrypt_buffer_empty_count; }
+size_t pn_tls_get_decrypt_input_buffer_capacity(pn_tls_t *tls) { return tls->decrypt_buffer_empty_count; }
+size_t pn_tls_get_encrypt_output_buffer_capacity(pn_tls_t *tls) { return tls->eresult_empty_count; }
+size_t pn_tls_get_decrypt_output_buffer_capacity(pn_tls_t *tls) { return tls->dresult_empty_count; }
 
-size_t pn_tls_decrypted_result_count(pn_tls_t *tls) {
+size_t pn_tls_get_decrypt_output_buffer_count(pn_tls_t *tls) {
   return tls->dresult_decrypted_count;
 }
 
-size_t pn_tls_encrypted_result_count(pn_tls_t *tls) {
+size_t pn_tls_get_encrypt_output_buffer_count(pn_tls_t *tls) {
   return tls->eresult_encrypted_count;
 }
 
 
-uint32_t pn_tls_last_decrypted_buffer_size(pn_tls_t *tls) {
+uint32_t pn_tls_get_last_decrypt_output_buffer_size(pn_tls_t *tls) {
   return tls->dresult_last_decrypted ? tls->dresult_buffers[tls->dresult_last_decrypted-1].size : 0;
 }
 
-uint32_t pn_tls_last_encrypted_buffer_size(pn_tls_t *tls) {
+uint32_t pn_tls_get_last_encrypt_output_buffer_size(pn_tls_t *tls) {
   return tls->eresult_last_encrypted ? tls->eresult_buffers[tls->eresult_last_encrypted-1].size : 0;
 }
 
@@ -1459,18 +1459,18 @@ const char* pn_tls_get_remote_subject_subfield(pn_tls_t *ssl, pn_tls_cert_subjec
   return NULL;
 }
 
-bool pn_tls_encrypted_pending(pn_tls_t *tls)
+bool pn_tls_get_encrypt_output_pending(pn_tls_t *tls)
 {
   if (tls && tls->started) {
-    return tls->eresult_first_encrypted || pn_tls_need_encrypt_result_buffers(tls);
+    return tls->eresult_first_encrypted || pn_tls_need_encrypt_output_buffers(tls);
   }
   return 0;
 }
 
-bool pn_tls_decrypted_pending(pn_tls_t *tls)
+bool pn_tls_get_decrypt_output_pending(pn_tls_t *tls)
 {
   if (tls && tls->started) {
-    return tls->dresult_first_decrypted || pn_tls_need_decrypt_result_buffers(tls);
+    return tls->dresult_first_decrypted || pn_tls_need_decrypt_output_buffers(tls);
   }
   return 0;
 }
@@ -1595,7 +1595,7 @@ static void pbuffer_to_raw_buffer(pbuffer_t *pbuf, pn_raw_buffer_t *rbuf) {
 size_t pn_tls_give_encrypt_input_buffers(pn_tls_t* tls, pn_raw_buffer_t const* bufs, size_t count_bufs) {
   assert(tls);
 
-  size_t can_take = pn_min(count_bufs, pn_tls_encrypt_input_buffers_capacity(tls));
+  size_t can_take = pn_min(count_bufs, pn_tls_get_encrypt_input_buffer_capacity(tls));
   if ( can_take==0 ) return 0;
 
   buff_ptr current = tls->encrypt_first_empty;
@@ -1629,7 +1629,7 @@ size_t pn_tls_give_encrypt_input_buffers(pn_tls_t* tls, pn_raw_buffer_t const* b
 size_t pn_tls_give_decrypt_input_buffers(pn_tls_t* tls, pn_raw_buffer_t const* bufs, size_t count_bufs) {
   assert(tls);
 
-  size_t can_take = pn_min(count_bufs, pn_tls_decrypt_input_buffers_capacity(tls));
+  size_t can_take = pn_min(count_bufs, pn_tls_get_decrypt_input_buffer_capacity(tls));
   if ( can_take==0 ) return 0;
 
   buff_ptr current = tls->decrypt_first_empty;
@@ -1660,10 +1660,10 @@ size_t pn_tls_give_decrypt_input_buffers(pn_tls_t* tls, pn_raw_buffer_t const* b
   return can_take;
 }
 
-size_t pn_tls_give_encrypt_result_buffers(pn_tls_t* tls, pn_raw_buffer_t const* bufs, size_t count_bufs) {
+size_t pn_tls_give_encrypt_output_buffers(pn_tls_t* tls, pn_raw_buffer_t const* bufs, size_t count_bufs) {
   assert(tls);
 
-  size_t can_take = pn_min(count_bufs, pn_tls_encrypt_result_buffers_capacity(tls));
+  size_t can_take = pn_min(count_bufs, pn_tls_get_encrypt_output_buffer_capacity(tls));
   if ( can_take==0 ) return 0;
 
   buff_ptr current = tls->eresult_first_empty;
@@ -1687,10 +1687,10 @@ size_t pn_tls_give_encrypt_result_buffers(pn_tls_t* tls, pn_raw_buffer_t const* 
   return can_take;
 }
 
-size_t pn_tls_give_decrypt_result_buffers(pn_tls_t* tls, pn_raw_buffer_t const* bufs, size_t count_bufs) {
+size_t pn_tls_give_decrypt_output_buffers(pn_tls_t* tls, pn_raw_buffer_t const* bufs, size_t count_bufs) {
   assert(tls);
 
-  size_t can_take = pn_min(count_bufs, pn_tls_decrypt_result_buffers_capacity(tls));
+  size_t can_take = pn_min(count_bufs, pn_tls_get_decrypt_output_buffer_capacity(tls));
   if ( can_take==0 ) return 0;
 
   buff_ptr current = tls->dresult_first_empty;
@@ -1774,7 +1774,7 @@ size_t pn_tls_take_encrypt_input_buffers(pn_tls_t *tls, pn_raw_buffer_t *buffers
   return count;
 }
 
-size_t pn_tls_take_decrypted_result_buffers(pn_tls_t *tls, pn_raw_buffer_t *buffers, size_t num) {
+size_t pn_tls_take_decrypt_output_buffers(pn_tls_t *tls, pn_raw_buffer_t *buffers, size_t num) {
   assert(tls);
   size_t count = 0;
 
@@ -1805,7 +1805,7 @@ size_t pn_tls_take_decrypted_result_buffers(pn_tls_t *tls, pn_raw_buffer_t *buff
   return count;
 }
 
-size_t pn_tls_take_encrypted_result_buffers(pn_tls_t *tls, pn_raw_buffer_t *buffers, size_t num) {
+size_t pn_tls_take_encrypt_output_buffers(pn_tls_t *tls, pn_raw_buffer_t *buffers, size_t num) {
   assert(tls);
   size_t count = 0;
 
@@ -2109,7 +2109,7 @@ int pn_tls_process(pn_tls_t* tls) {
   return 0;
 }
 
-bool pn_tls_need_encrypt_result_buffers(pn_tls_t* tls) {
+bool pn_tls_need_encrypt_output_buffers(pn_tls_t* tls) {
   if (tls && tls->started && tls->eresult_empty_count) {
     if (!current_encrypted_result(tls)) {
       // Existing result buffers all full.  Check if OpenSSL has data to read.
@@ -2119,7 +2119,7 @@ bool pn_tls_need_encrypt_result_buffers(pn_tls_t* tls) {
   return false;
 }
 
-bool pn_tls_need_decrypt_result_buffers(pn_tls_t* tls) {
+bool pn_tls_need_decrypt_output_buffers(pn_tls_t* tls) {
   if (tls && tls->started && tls->dresult_empty_count) {
     if (!current_decrypted_result(tls)) {
       // Existing result buffers all full.  Check if OpenSSL has data to read.
@@ -2135,9 +2135,9 @@ void pn_tls_set_encrypt_input_buffer_max_capacity(pn_tls_t *tls, size_t s) {
 void pn_tls_set_decrypt_input_buffer_max_capacity(pn_tls_t *tls, size_t s) {
   if (!tls->started) tls->decrypt_buffer_count = s;
 }
-void pn_tls_set_encrypt_result_buffer_max_capacity(pn_tls_t *tls, size_t s) {
+void pn_tls_set_encrypt_output_buffer_max_capacity(pn_tls_t *tls, size_t s) {
   if (!tls->started) tls->eresult_buffer_count = s;
 }
-void pn_tls_set_decrypt_result_buffer_max_capacity(pn_tls_t *tls, size_t s) {
+void pn_tls_set_decrypt_output_buffer_max_capacity(pn_tls_t *tls, size_t s) {
   if (!tls->started) tls->dresult_buffer_count = s;
 }

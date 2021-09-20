@@ -81,12 +81,6 @@ TEST_CASE("plain old fubar") {
   pn_tls_set_peer_hostname(cli_tls, "test_server");
   pn_tls_t *srv_tls = pn_tls(server_domain);
 
-  FILE *fp=fopen("/tmp/cjzzz", "a");
-  fprintf(fp, "init foo %d %d\n", (int) pn_tls_encrypted_pending(cli_tls), (int) pn_tls_encrypted_pending(srv_tls));
-  fprintf(fp, "init bar %d %d\n", (int) pn_tls_decrypted_pending(cli_tls), (int) pn_tls_decrypted_pending(srv_tls));
-  fflush(fp);
-  CAPTURE((int) pn_tls_encrypted_pending(cli_tls), (int) pn_tls_encrypted_pending(srv_tls));
-  INFO("can never leave " << pn_tls_decrypted_pending(cli_tls));
   CHECK(false);
   pn_tls_free(cli_tls);
   pn_tls_free(srv_tls);
