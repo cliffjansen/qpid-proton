@@ -183,11 +183,16 @@ struct pn_tls_t {
   BIO *bio_net_io;      // socket-side "half" of network-facing BIO
   // buffers for holding unprocessed bytes to be en/decoded when BIO is able to process them.
 
+  int last_pn_err;      // TLS errors are fatal to the session, including session tickets/psks
+  int last_openssl_err;
+
   ssize_t app_input_closed;   // error code returned by upper layer process input
   ssize_t app_output_closed;  // error code returned by upper layer process output
 
   bool ssl_shutdown;    // BIO_ssl_shutdown() called on socket.
   bool ssl_closed;      // shutdown complete, or SSL error
+  bool dec_closed;      // Peer's TLS closure record received.  Clean EOF of inbound decrypted data.
+  bool enc_closed;      // Self TLS closure record sent or pending flush.
   bool read_blocked;    // SSL blocked until more network data is read
   bool write_blocked;   // SSL blocked until data is written to network
   bool enc_rblocked;
@@ -2019,7 +2024,7 @@ static void decrypt(pn_tls_t *tls) {
   while (true) {
 
     // Insert encrypted data into openssl filter chain.
-    while (pending && !tls->dec_wblocked) {
+    while (pending && !tls->dec_wblocked && !tls->dec_closed) {
       size_t n = pending->size - tls->decrypt_pending_offset;
       if (n) {
         char *bytes = pending->bytes + pending->offset + tls->decrypt_pending_offset;
@@ -2027,7 +2032,8 @@ static void decrypt(pn_tls_t *tls) {
         if (wcount < (int) n)
           tls->dec_wblocked = true;
         if (wcount > 0) {
-          tls->dec_rblocked = false;
+          if (!tls->dec_closed)
+            tls->dec_rblocked = false;
           tls->enc_rblocked = false;
           tls->decrypt_pending_offset += wcount;
         }
@@ -2062,7 +2068,8 @@ static void decrypt(pn_tls_t *tls) {
           case SSL_ERROR_ZERO_RETURN:
             // SSL closed cleanly
             ssl_log(NULL, PN_LEVEL_TRACE, "SSL connection has closed");
-            tls->ssl_closed = true;
+            tls->dec_closed = true;
+            tls->dec_rblocked = true;
             break;
           default:
             // TODO: communicate error and shutdown.
@@ -2080,7 +2087,7 @@ static void decrypt(pn_tls_t *tls) {
     }
     
     // Done if outbufs exhausted or all inbufs decrypted
-    if (!curr_result || tls->dec_rblocked)
+    if (!curr_result || tls->dec_rblocked || tls->dec_closed)
       break;
   }
 
@@ -2111,7 +2118,7 @@ bool pn_tls_need_encrypt_output_buffers(pn_tls_t* tls) {
 }
 
 bool pn_tls_need_decrypt_output_buffers(pn_tls_t* tls) {
-  if (tls && tls->started && tls->dresult_empty_count) {
+  if (tls && tls->started && tls->dresult_empty_count && !tls->dec_closed) {
     if (!current_decrypted_result(tls)) {
       // Existing result buffers all full.  Check if OpenSSL has data to read.
       return (BIO_pending(tls->bio_ssl) > 0);
