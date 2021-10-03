@@ -547,20 +547,23 @@ PN_TLS_EXTERN int pn_tls_stop(pn_tls_t* tls);
 
 // Confirms receipt of the peer's TLS closure record.  This confirms clean shutdown and
 // the absence of a truncation attack.
-PN_TLS_EXTERN int pn_tls_read_closed(pn_tls_t* tls);
+PN_TLS_EXTERN bool pn_tls_read_closed(pn_tls_t* tls);
 
 // Closes the encrypt side and appends the TLS closure record to the pending encypted
 // output.  pn_tls_give_encrypt_input_buffers() will no longer take any supplied buffers.
-PN_TLS_EXTERN int pn_tls_write_close(pn_tls_t* tls);
+PN_TLS_EXTERN void pn_tls_write_close(pn_tls_t* tls);
 
-// If non-zero the TLS session was unable to start or was aborted.  The application should
-// stop all read activity, and take all remaining encrypted content and write it onto the
-// connection (i.e. until pn_tls_get_encrypt_output_pending() is false), then close the associated
-// connection.  Specific return values TBD (INIT_FAILED, BAD_AUTH, TLS_PROTOCOL_ERROR, ...).
-PN_TLS_EXTERN int pn_tls_get_last_session_error(pn_tls_t* tls);
+// If non-zero the TLS session was unable to start or was aborted.
+// The application should stop all read activity, and take all
+// remaining encrypted content and write it onto the connection
+// (i.e. until pn_tls_get_encrypt_output_pending() is false), then
+// close the associated connection.  This will allow the error to be
+// propagated to the peer if expected by the TLS protocol.  Specific return values TBD (INIT_FAILED,
+// BAD_AUTH, TLS_PROTOCOL_ERROR, ...).
+PN_TLS_EXTERN int pn_tls_get_session_error(pn_tls_t* tls);
 
-// Error string associated with the last TLS session error.
-PN_TLS_EXTERN size_t pn_tls_get_last_session_error_string(pn_tls_t* tls, char *buf, size_t buf_len);
+// Error string associated with the fatal TLS session error. zero if no error, buf is null or buf_len is 0.
+PN_TLS_EXTERN size_t pn_tls_get_session_error_string(pn_tls_t* tls, char *buf, size_t buf_len);
 
 
 // TODO: ALPN TLS RFC7301 for at least http2.   Tracing.

@@ -107,9 +107,10 @@ typedef struct jabber_connection_t {
   pn_raw_connection_t *rawc;
   pn_tls_t *tls;
   bool tls_has_output;
+  bool need_rawc_write_close;
+  bool close_initiated;
   bool is_server;
   bool jabber_turn;
-  bool closed;
 } jabber_connection_t;
 
 static inline uint32_t room(pn_raw_buffer_t const *rb) {
@@ -155,11 +156,8 @@ static void gobble_jabber(jabber_connection_t* jc, pn_raw_buffer_t* rbuf) {
 
   j->total_bytes_recv += rbuf->size;
   if (j->total_bytes_recv == j->total_bytes_sent) {
-    if (j->current_jline == jlines_count) {  // All lines sent and received, initiate shutdown
-      pn_raw_connection_close(jc->rawc);
-      jc->closed = true;
-      pn_listener_close(j->listener);
-    } else { // This connection sends the next set of lines.
+    if (j->current_jline != jlines_count) {
+      // This connection sends the next set of lines.
       jc->jabber_turn = true;
       pn_raw_connection_wake(jc->rawc);
     }
@@ -179,6 +177,7 @@ static void handle_outgoing(jabber_connection_t* jc) {
   // the buffer pool.
 
   // Do accounting for previous raw connection writes and make room for new ones.
+  jabber_t *j = jc->parent;
   pn_raw_buffer_t rbuf;
   while (1 == pn_raw_connection_take_written_buffers(jc->rawc, &rbuf, 1))
     rbuf_pool_return(&rbuf);
@@ -201,6 +200,13 @@ static void handle_outgoing(jabber_connection_t* jc) {
     for (size_t tail = 4; tail > wire_buf_count; tail--)
       rbuf_pool_return(wire_buffers + tail - 1);  // not used, back to pool.
     jc->jabber_turn = false;    // Peer gets to do next jabber.
+
+    pn_raw_connection_write_buffers(jc->rawc, wire_buffers, wire_buf_count);
+
+    // If no more application data to write, start orderly close.
+    if (j->current_jline == jlines_count)
+      pn_raw_connection_write_close(jc->rawc);
+
   } else {
     // TLS
 
@@ -216,6 +222,14 @@ static void handle_outgoing(jabber_connection_t* jc) {
         jc->jabber_turn = false;  // Peer gets to do next jabber.
         size_t consumed = pn_tls_give_encrypt_input_buffers(jc->tls, unencrypted_buffers, unencrypted_buf_count);
         if (consumed != unencrypted_buf_count) abort();  // Our careful counting was meant to prevent this.
+
+        // If no more application data to write, start orderly close.
+        // For TLS, indicate we are done writing to generate the protocol's EOS (closure alert).
+        if (j->current_jline == jlines_count) {
+          pn_tls_write_close(jc->tls);
+          jc->close_initiated = true;
+          jc->need_rawc_write_close = true;  // Remember to eventually close the raw connection.
+        }
       }
     }
 
@@ -238,12 +252,19 @@ static void handle_outgoing(jabber_connection_t* jc) {
     while (pn_tls_take_encrypt_input_buffers(jc->tls, &rbuf, 1) == 1)
       rbuf_pool_return(&rbuf);
 
+    // Write the application data we just encrypted.
+    pn_raw_connection_write_buffers(jc->rawc, wire_buffers, wire_buf_count);
+
     // Remember whether we missed some output buffered in the TLS library and need to come back.
     jc->tls_has_output = pn_tls_get_encrypt_output_pending(jc->tls) > 0;
+
+    if (jc->need_rawc_write_close && !jc->tls_has_output) {
+      // We have written to the raw connection all the output the TLS library can give us.
+      pn_raw_connection_write_close(jc->rawc);
+      jc->need_rawc_write_close = false;
+    }
   }
 
-  if (pn_raw_connection_write_buffers(jc->rawc, wire_buffers, wire_buf_count) != wire_buf_count)
-    abort();
 }
 
 static void handle_incoming(jabber_connection_t* jc) {
@@ -251,6 +272,7 @@ static void handle_incoming(jabber_connection_t* jc) {
   pn_raw_buffer_t wire_buffers[4];
   pn_raw_buffer_t rbuf;
   bool input_closed = false;
+  const char *self = jc->is_server ? "server" : "client";
 
   while (!done) {
     int max_bufs = 4;
@@ -263,23 +285,35 @@ static void handle_incoming(jabber_connection_t* jc) {
     size_t buf_count = pn_raw_connection_take_read_buffers(jc->rawc, wire_buffers, max_bufs);
     if (buf_count < 4)
       done = true;
-
     if (buf_count) {
       if (wire_buffers[0].size == 0) {
         input_closed = true;
         rbuf_pool_multi_return(wire_buffers, buf_count);
-        break;
       }
 
       if (!jc->tls) {
         // Non TLS case, use wire data directly
-        for (size_t i = 0; i < buf_count; i++) {
-            gobble_jabber(jc, wire_buffers + i);  // buffer ownership transferred to application
+        if (input_closed) {
+          pn_raw_connection_close(jc->rawc);
+          return;
         }
-
+        for (size_t i = 0; i < buf_count; i++) {
+          gobble_jabber(jc, wire_buffers + i);  // buffer ownership transferred to application
+        }
       } else {
         // TLS case
-        // Top up result buffers.
+        if (input_closed) {
+          if (!jc->close_initiated && !pn_tls_read_closed(jc->tls)) {
+            // TLS protocol does not require both parties to wait for the final EOS/closure
+            // alerts unless the connection has a continued use after the session.  Here we
+            // do the one sided EOS check.
+            printf("**%s: unexpected network hangup, TLS session not ended cleanly.\n", self);
+          }
+          pn_raw_connection_close(jc->rawc);
+          pn_tls_stop(jc->tls);
+          return;
+        }
+
         size_t consumed = pn_tls_give_decrypt_input_buffers(jc->tls, wire_buffers, buf_count);
         if (consumed != buf_count) abort();  // Should never happen if we counted correctly.
         pn_tls_process(jc->tls);
@@ -295,6 +329,13 @@ static void handle_incoming(jabber_connection_t* jc) {
           gobble_jabber(jc, &rbuf); // buffer ownership transferred to application
         }
 
+        if (pn_tls_read_closed(jc->tls) && !jc->close_initiated) {
+          printf("**%s: received TLS end of session notification from peer\n", self);
+          pn_tls_write_close(jc->tls);
+          pn_tls_process(jc->tls);
+          jc->need_rawc_write_close = true;  // Remember to eventually close the raw connection.
+        }
+
         // Reclaim and recycle the TLS encoded input buffers (from the wire) processed by the TLS library
         while (pn_tls_take_decrypt_input_buffers(jc->tls, &rbuf, 1) == 1)
           rbuf_pool_return(&rbuf);
@@ -302,13 +343,7 @@ static void handle_incoming(jabber_connection_t* jc) {
         // TLS input can generate non-application output.  Note that here.
         jc->tls_has_output = pn_tls_get_encrypt_output_pending(jc->tls) > 0;
       }
-
     }
-  }
-
-  if (input_closed && !jc->closed) {
-    pn_raw_connection_close(jc->rawc);
-    jc->closed = true;
   }
 }
 
@@ -350,13 +385,14 @@ static void create_server_connection(jabber_t *j, pn_listener_t *listener) {
   }
   pn_listener_raw_accept(listener, c);
   printf("**listener accepted %p\n", (void *)jc);
+  pn_listener_close(j->listener); // Single client.
 }
 
 static bool handle_raw_connection(jabber_connection_t* jc, pn_event_t* event) {
   switch (pn_event_type(event)) {
 
     case PN_RAW_CONNECTION_CONNECTED: {
-      printf("**raw connection %p %d\n", (void *)jc, jc->is_server);
+      printf("**raw connection %p %s\n", (void *)jc, jc->is_server ? "server" : "client");
     } break;
 
     case PN_RAW_CONNECTION_NEED_READ_BUFFERS: {
@@ -408,7 +444,7 @@ static bool handle(jabber_t* j, pn_event_t* event) {
     } break;
 
     case PN_PROACTOR_INACTIVE:
-      printf("**shutdown event\n");
+      printf("**proactor inactive: connections and listeners finalized\n");
       // fall through
     case PN_PROACTOR_INTERRUPT: {
       pn_proactor_t *proactor = pn_event_proactor(event);
