@@ -380,7 +380,7 @@ int pn_tls_get_session_error(pn_tls_t* tls) {
   return tls->pn_tls_err;
 }
 
-size_t pn_tls_get__session_error_string(pn_tls_t* tls, char *buf, size_t buf_len) {
+size_t pn_tls_get_session_error_string(pn_tls_t* tls, char *buf, size_t buf_len) {
   if (!buf || !buf_len)
     return 0;
   if (tls->openssl_err)
