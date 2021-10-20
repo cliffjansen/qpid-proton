@@ -19,6 +19,14 @@
  *
  */
 
+/* Enable POSIX features beyond c99 for modern pthread and standard strerror_r() */
+#ifndef _POSIX_C_SOURCE
+#define _POSIX_C_SOURCE 200809L
+#endif
+/* Avoid GNU extensions, in particular the incompatible alternative strerror_r() */
+#undef _GNU_SOURCE
+
+
 #include "platform/platform.h"
 #include "platform/platform_fmt.h"
 #include "core/util.h"
@@ -62,10 +70,10 @@
  */
 
 enum {
-  eresult_buffer_default_count = 4,
-  dresult_buffer_default_count = 4,
-  decrypt_buffer_default_count = 4,
-  encrypt_buffer_default_count = 4
+  default_eresult_buffer_count = 4,
+  default_dresult_buffer_count = 4,
+  default_decrypt_buffer_count = 4,
+  default_encrypt_buffer_count = 4
 };
 
 typedef enum {
@@ -183,9 +191,10 @@ struct pn_tls_t {
   BIO *bio_net_io;      // socket-side "half" of network-facing BIO
   // buffers for holding unprocessed bytes to be en/decoded when BIO is able to process them.
 
-  int pn_tls_err;      // TLS errors are fatal to the session, including session tickets/psks
+  int pn_tls_err;       // TLS errors are fatal to the session, including session tickets/psks
   int openssl_err_type; // From SSL_get_error()
   unsigned long openssl_err; // From ERR_get_error()
+  int os_errno;         // In case the OS can supply error context not available from OpenSSL
 
   bool ssl_shutdown;    // BIO_ssl_shutdown() called on socket.
   bool ssl_closed;      // shutdown complete, or SSL error
@@ -369,11 +378,34 @@ static void validate_strict(pn_tls_t *tls) {
 }
 
 static void tls_fatal(pn_tls_t *tls, int ssl_err_type, int pn_tls_err) {
-  tls->openssl_err_type = ssl_err_type;
-  tls->pn_tls_err = pn_tls_err;
-  tls->openssl_err = ERR_get_error();
-  if (ssl_err_type == SSL_ERROR_SYSCALL || ssl_err_type == SSL_ERROR_SSL)
-    tls->can_shutdown = false;
+  if (!tls->pn_tls_err) {
+    // no previous error to overwrite
+    tls->pn_tls_err = pn_tls_err;
+    tls->openssl_err_type = ssl_err_type;
+    tls->openssl_err = ERR_get_error();
+    tls->enc_wblocked = true;
+    tls->dec_rblocked = true;
+    tls->dec_wblocked = true;
+    tls->enc_closed = true;
+    if (ssl_err_type == SSL_ERROR_SYSCALL || ssl_err_type == SSL_ERROR_SSL) {
+      // OpenSSL requires immediate halt
+      tls->can_shutdown = false;
+      tls->enc_rblocked = true;
+    } else {
+      if (tls->enc_rblocked) {
+        // Maybe new output generated.
+        ERR_clear_error(); // ZZZ  revisit need.
+        tls->enc_rblocked = (BIO_pending(tls->bio_net_io) == 0);
+      }
+    }
+    if (ssl_err_type == SSL_ERROR_SYSCALL)
+      tls->os_errno = errno;  // Save this in case it helps error reporting.
+  } else {
+    // ZZZ handle subsequent error here
+  }
+  // TODO: use tracing here to provide additional error info from the ERR_get_error error queue.
+  //       Must be done here while in same thread as caller.
+  ERR_clear_error();
 }
 
 int pn_tls_get_session_error(pn_tls_t* tls) {
@@ -381,16 +413,28 @@ int pn_tls_get_session_error(pn_tls_t* tls) {
 }
 
 size_t pn_tls_get_session_error_string(pn_tls_t* tls, char *buf, size_t buf_len) {
-  if (!buf || !buf_len)
+  if (!buf || !buf_len || !tls->pn_tls_err)
     return 0;
+
   if (tls->openssl_err)
     ERR_error_string_n(tls->openssl_err, buf, buf_len); // Null terminated.
   else {
-    if (!tls->pn_tls_err)
-      return 0;
-    strncpy(buf, "unkown_error", buf_len);  // Not necessarily null terminated.
-    if (buf[buf_len-1])
-      buf[buf_len-1] = 0;
+    if (tls->openssl_err_type == SSL_ERROR_SYSCALL) {
+      // OpenSSL doesn't know the cause of the error.  Memory corruption or starvation?
+      // Byte stream in input buffers from peer not the same as it sent?
+      // errno may help identify cause.
+      if (tls->os_errno) {
+        char oserr[1024];
+        int e = strerror_r(tls->os_errno, oserr, sizeof(oserr));
+        if (e) snprintf(oserr, sizeof(oserr), "unknown system error %d", tls->os_errno);
+        snprintf(buf, buf_len, "external error: %s", oserr);
+      } else {
+        snprintf(buf, buf_len, "external error: bad TLS stream data");
+      }
+    } else {
+      // Presumably this never happens, always accompanied by tls->openssl_err, but if not:
+      snprintf(buf, buf_len, "OpenSSL generic error type %d", tls->openssl_err_type);
+    }
   }
   return strlen(buf);
 }
@@ -1110,13 +1154,13 @@ int pn_tls_start(pn_tls_t *tls) {
   if (tls->started)
     return PN_ARG_ERR;
   if (!tls->eresult_buffer_count)
-    tls->eresult_buffer_count = eresult_buffer_default_count;
+    tls->eresult_buffer_count = default_eresult_buffer_count;
   if (!tls->dresult_buffer_count)
-    tls->dresult_buffer_count = dresult_buffer_default_count;
+    tls->dresult_buffer_count = default_dresult_buffer_count;
   if (!tls->encrypt_buffer_count)
-    tls->encrypt_buffer_count = encrypt_buffer_default_count;
+    tls->encrypt_buffer_count = default_encrypt_buffer_count;
   if (!tls->decrypt_buffer_count)
-    tls->decrypt_buffer_count = decrypt_buffer_default_count;
+    tls->decrypt_buffer_count = default_decrypt_buffer_count;
   // Allocate all four in one go.
   size_t count = tls->eresult_buffer_count + tls->dresult_buffer_count + tls->encrypt_buffer_count + tls->decrypt_buffer_count;
   tls->eresult_buffers = calloc(count, sizeof(pbuffer_t));
@@ -1475,22 +1519,6 @@ const char* pn_tls_get_remote_subject_subfield(pn_tls_t *ssl, pn_tls_cert_subjec
   return NULL;
 }
 
-bool pn_tls_get_encrypt_output_pending(pn_tls_t *tls)
-{
-  if (tls && tls->started) {
-    return tls->eresult_first_encrypted || pn_tls_need_encrypt_output_buffers(tls);
-  }
-  return 0;
-}
-
-bool pn_tls_get_decrypt_output_pending(pn_tls_t *tls)
-{
-  if (tls && tls->started) {
-    return tls->dresult_first_decrypted || pn_tls_need_decrypt_output_buffers(tls);
-  }
-  return 0;
-}
-
 static inline uint32_t room(pbuffer_t const *b) {
   if (b)
     return b->capacity - (b->offset + b->size);
@@ -1502,7 +1530,7 @@ static inline size_t size_min(uint32_t a, uint32_t b) {
 }
 
 bool pn_tls_can_encrypt(pn_tls_t * tls) {
-  return tls->handshake_ok && !tls->pn_tls_err;
+  return tls->handshake_ok && !tls->pn_tls_err && !tls->stopped;
 }
 
 
@@ -1611,7 +1639,7 @@ static void pbuffer_to_raw_buffer(pbuffer_t *pbuf, pn_raw_buffer_t *rbuf) {
 size_t pn_tls_give_encrypt_input_buffers(pn_tls_t* tls, pn_raw_buffer_t const* bufs, size_t count_bufs) {
   assert(tls);
 
-  if (tls->enc_closed)
+  if (tls->enc_closed || tls->stopped || tls->pn_tls_err)
     return 0;
   size_t can_take = pn_min(count_bufs, pn_tls_get_encrypt_input_buffer_capacity(tls));
   if ( can_take==0 ) return 0;
@@ -1647,7 +1675,7 @@ size_t pn_tls_give_encrypt_input_buffers(pn_tls_t* tls, pn_raw_buffer_t const* b
 size_t pn_tls_give_decrypt_input_buffers(pn_tls_t* tls, pn_raw_buffer_t const* bufs, size_t count_bufs) {
   assert(tls);
 
-  if (tls->dec_closed)
+  if (tls->dec_closed || tls->stopped || tls->pn_tls_err)
     return 0;
   size_t can_take = pn_min(count_bufs, pn_tls_get_decrypt_input_buffer_capacity(tls));
   if ( can_take==0 ) return 0;
@@ -1996,13 +2024,11 @@ static void encrypt(pn_tls_t *tls) {
   bool try_shutdown_again = false;
 
   while (true) {
-    ERR_clear_error();
-
     // Insert unencrypted data into BIO.
     // OpenSSL maps each BIO_write to a separate TLS record.
     // The BIO can take 16KB + a bit before blocking.
     // TODO: consider allowing application to configure BIO buffer size on encrypt side.
-    while (pending && !tls->enc_wblocked && tls->can_shutdown) {
+    while (pending && !tls->enc_wblocked && tls->can_shutdown && !tls->pn_tls_err) {
       size_t n = pending->size - tls->encrypt_pending_offset;
       if (n) {
         char *bytes = pending->bytes + pending->offset + tls->encrypt_pending_offset;
@@ -2032,7 +2058,8 @@ static void encrypt(pn_tls_t *tls) {
         tls->enc_rblocked = true;
       if (rcount > 0) {
         tls->write_blocked = false;
-        tls->enc_wblocked = false;
+        if (!tls->pn_tls_err)
+          tls->enc_wblocked = false;
         if (result->size == 0) {
           // first data inserted: convert from blank type to encrypted type
           assert(result->type == buff_eresult_blank);
@@ -2076,7 +2103,6 @@ static void decrypt(pn_tls_t *tls) {
   while (true) {
     if (tls->pn_tls_err)
       return;
-    ERR_clear_error();
 
     // Insert encrypted data into openssl filter chain.
     while (pending && !tls->dec_wblocked && !tls->dec_closed) {
@@ -2130,6 +2156,7 @@ static void decrypt(pn_tls_t *tls) {
             break;
           default:
             tls_fatal(tls, reason, PN_TLS_PROTOCOL_ERR);
+            break;
           }
         } else {
           if (rcount == -1 && BIO_should_read(tls->bio_ssl))
@@ -2160,25 +2187,34 @@ static void decrypt(pn_tls_t *tls) {
 int pn_tls_process(pn_tls_t* tls) {
   if (!tls->started || tls->stopped)
     return PN_TLS_STATE_ERR;
-  decrypt(tls);  // Do this first.  May generate handshake or other on encrypt side.
-  if (tls->validating) validate_strict(tls);
-  encrypt(tls);
-  if (tls->validating) validate_strict(tls);
+
+  if (!tls->pn_tls_err) {
+    decrypt(tls);  // Do this first.  May generate handshake or other on encrypt side.
+    if (tls->validating) validate_strict(tls);
+  }
+  // We keep sending if there is a "minor" error that may result in an error message for the peer
+  if (!(tls->pn_tls_err && (tls->openssl_err_type == SSL_ERROR_SYSCALL || tls->openssl_err_type == SSL_ERROR_SSL))) {
+    encrypt(tls);
+    if (tls->validating) validate_strict(tls);
+  }
   return(tls->pn_tls_err);
 }
 
 bool pn_tls_need_encrypt_output_buffers(pn_tls_t* tls) {
-  if (tls && tls->started && tls->eresult_empty_count) {
-    if (!current_encrypted_result(tls)) {
-      // Existing result buffers all full.  Check if OpenSSL has data to read.
-      return (BIO_pending(tls->bio_net_io) > 0);
+  if (tls && tls->started && !tls->stopped && tls->eresult_empty_count) {
+    // We keep sending if there is a "minor" error that may result in an error message for the peer
+    if (!(tls->pn_tls_err && (tls->openssl_err_type == SSL_ERROR_SYSCALL || tls->openssl_err_type == SSL_ERROR_SSL))) {
+      if (!current_encrypted_result(tls)) {
+        // Existing result buffers all full.  Check if OpenSSL has data to read.
+        return (BIO_pending(tls->bio_net_io) > 0);
+      }
     }
   }
   return false;
 }
 
 bool pn_tls_need_decrypt_output_buffers(pn_tls_t* tls) {
-  if (tls && tls->started && tls->dresult_empty_count && !tls->dec_closed) {
+  if (tls && tls->started && !tls->stopped && tls->dresult_empty_count && !tls->dec_closed && !tls->pn_tls_err) {
     if (!current_decrypted_result(tls)) {
       // Existing result buffers all full.  Check if OpenSSL has data to read.
       return (BIO_pending(tls->bio_ssl) > 0);
@@ -2186,6 +2222,24 @@ bool pn_tls_need_decrypt_output_buffers(pn_tls_t* tls) {
   }
   return false;
 }
+
+bool pn_tls_get_encrypt_output_pending(pn_tls_t *tls)
+{
+  if (tls && tls->started && !tls->stopped) {
+    if (!(tls->pn_tls_err && (tls->openssl_err_type == SSL_ERROR_SYSCALL || tls->openssl_err_type == SSL_ERROR_SSL)))
+      return tls->eresult_first_encrypted || (BIO_pending(tls->bio_net_io) > 0);
+  }
+  return false;
+}
+
+bool pn_tls_get_decrypt_output_pending(pn_tls_t *tls)
+{
+  if (tls && tls->started && !tls->stopped &&!tls->dec_closed && !tls->pn_tls_err) {
+    return tls->dresult_first_decrypted || (BIO_pending(tls->bio_ssl) > 0);
+  }
+  return false;
+}
+
 
 void pn_tls_set_encrypt_input_buffer_max_capacity(pn_tls_t *tls, size_t s) {
   if (!tls->started) tls->encrypt_buffer_count = s;
@@ -2207,6 +2261,5 @@ bool pn_tls_read_closed(pn_tls_t* tls) {
 void pn_tls_write_close(pn_tls_t* tls) {
   if (!tls->enc_closed) {
     tls->enc_closed = true;
-    // ZZZ anything else here or next process()?
   }
 }
