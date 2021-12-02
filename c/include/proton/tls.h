@@ -23,9 +23,6 @@
  */
 
 #include <proton/import_export.h>
-// ZZZ next two needed?
-#include <proton/type_compat.h>
-#include <proton/types.h>
 #include <proton/raw_connection.h>
 
 #ifdef __cplusplus
@@ -565,8 +562,43 @@ PN_TLS_EXTERN int pn_tls_get_session_error(pn_tls_t* tls);
 // Error string associated with the fatal TLS session error. zero if no error, buf is null or buf_len is 0.
 PN_TLS_EXTERN size_t pn_tls_get_session_error_string(pn_tls_t* tls, char *buf, size_t buf_len);
 
+/**
+ * Provide an ordered list of application protols for RFC 7301 negotiation.
+ * List ordered in descending preference for the caller.
+ *
+ * Each protocol name must be provided as its well known octet sequence in UTF-8, null
+ * terminated.  For the client, the order is preserved in the client_hello to the server, but
+ * the server will not usually take that ordering into account.
+ *
+ * For the server, protocol selection follows the standard mechanism in RFC 7301: the first item in the server list that matches an item in the client list is selected.  ZZZ no match -> failed TLS.
+ *
+ * ALPN processing can be turned off by setting protocols to NULL and protocol_count to zero.
+ *
+ * @note This setting effects only those pn_tls_t objects created after this call
+ * returns.  pn_tls_t objects created before invoking this method will use the domain's
+ * previous setting.
+ *
+ * @param[in] tls the tls client/server to query.
+ * @param[in] protocols the array of pointers the protocol names in the list.
+ * @param[in] count the size of the protocols array.
+ * @return 0 on success, PN_ARG_ERROR if any array pointers are null or any protocol names exceed 255 bytes in length. PN_OUT_OF_MEMORY if memory allocation fails.
+*/
+PN_TLS_EXTERN int pn_tls_domain_set_alpn(pn_tls_domain_t *domain, const char **protocols, size_t protocol_count);
 
-// TODO: ALPN TLS RFC7301 for at least http2.   Tracing.
+/**
+ * Get the name of the negotiated application protocol.
+ *
+ * Gets the name of the negotiated application protocol or
+ * returns FALSE if the negotiation failed, is not yet complete, or not initiated by the client.
+ *
+ * @param[in] tls the tls client/server to query.
+ * @param[in,out] buffer buffer of size bytes to hold the application protocol name.
+ * @param[in] size maximum number of bytes in buffer.
+ * @return True if the protocol name is written to buffer, False if no application protocol in use or the buffer is too small to hold the protocol name and null terminating byte.
+ */
+PN_TLS_EXTERN bool pn_tls_get_alpn(pn_tls_t *tls, char *buffer, size_t size);
+
+// TODO:  Tracing.  Session tickets.
 
 /**
  * @}

@@ -104,6 +104,7 @@ typedef struct jabber_t {
   size_t current_jline;
   size_t total_bytes_sent;
   size_t total_bytes_recv;
+  bool alpn_enabled;
 } jabber_t;
 
 typedef struct jabber_connection_t {
@@ -125,7 +126,9 @@ typedef struct jabber_connection_t {
 
   bool is_server;
   bool jabber_turn;
+  char *alpn_protocol;
 } jabber_connection_t;
+
 
 static inline uint32_t room(pn_raw_buffer_t const *rb) {
   if (rb)
@@ -210,6 +213,39 @@ static void jabber_tls_begin_close(jabber_connection_t* jc) {
   }
 }
 
+static void check_alpn(jabber_connection_t* jc) {
+  const char *self = jc->is_server ? "server" : "client";
+
+  if (!jc->alpn_protocol) {
+    char buf[256];  // max possible size including terminating null
+    if (pn_tls_get_alpn(jc->tls, buf, 256)) {
+      size_t l = strnlen(buf, 256);
+      assert(l > 0 && l < 256);
+      jc->alpn_protocol = (char *) malloc(l+1);
+      assert(jc->alpn_protocol);
+      memmove(jc->alpn_protocol, buf, l + 1);
+      printf("**%s: using ALPN protocol %s\n", self, jc->alpn_protocol);
+    } else {
+      printf("**%s: no available ALPN protocol\n", self);
+    }
+  }
+}
+
+static void load_alpn_strings(pn_tls_domain_t *cli_domain, pn_tls_domain_t *srv_domain) {
+  const char *protos[4];
+  // server...
+  protos[0] = "jibberjabber";
+  protos[1] = "jabber/v1";   // expected winner
+  protos[2] = "piglatin";
+  pn_tls_domain_set_alpn(srv_domain, protos, 3);
+  //client
+  protos[0] = "jabber/v2";
+  protos[1] = "piglatin";
+  protos[2] = "jabber/v1";   // expected winner
+  protos[3] = "ghost";
+  pn_tls_domain_set_alpn(cli_domain, protos, 4);
+}
+
 static void handle_outgoing(jabber_connection_t* jc) {
   // Handle here as much outgoing data as possible.  Limits include how much
   // data is available to send, how much data the raw_connection can accept
@@ -256,6 +292,7 @@ static void handle_outgoing(jabber_connection_t* jc) {
     // TLS
 
     if (pn_tls_can_encrypt(jc->tls) && jc->jabber_turn && !jc->tls_closing) {
+      assert(jc->alpn_protocol || !jc->parent->alpn_enabled);
       // Add jabber data if there is room.
       size_t max_bufs_to_encrypt = size_t_min(4, pn_tls_get_encrypt_input_buffer_capacity(jc->tls));
       if (max_bufs_to_encrypt) {
@@ -374,6 +411,10 @@ static void handle_incoming(jabber_connection_t* jc, bool rawc_input_closed_even
           if (!jabber_tls_process(jc))
             return;
 
+          if (jc->parent->alpn_enabled && !jc->alpn_protocol) {
+            check_alpn(jc);
+          }
+
           while (pn_tls_need_decrypt_output_buffers(jc->tls)) {
             rbuf_pool_get(&rbuf, 1);
             assert(pn_tls_get_decrypt_output_buffer_capacity(jc->tls) > 0);
@@ -465,7 +506,7 @@ static void tls_cleanup(jabber_connection_t* jc) {
       rbuf_pool_return(&rb);
     while (pn_tls_take_decrypt_output_buffers(jc->tls, &rb, 1) == 1)
       rbuf_pool_return(&rb);
-    free(jc->tls);
+    pn_tls_free(jc->tls);
     jc->tls = NULL;
   }
 }
@@ -594,6 +635,7 @@ int main(int argc, char **argv) {
   bool use_tls = true;
   if (argc > 3 && strncmp(argv[3], "no_tls", 6) == 0)
     use_tls = false;
+  j.alpn_enabled = use_tls;  // make configurable
 
   j.proactor = pn_proactor();
   j.threads = 4;
@@ -607,6 +649,11 @@ int main(int argc, char **argv) {
     if (pn_tls_domain_set_trusted_ca_db(j.cli_domain, CERTIFICATE("tserver")) != 0) {
       printf("CA failure\n");
       exit(1);
+    }
+
+    if (j.alpn_enabled) {
+      // Set some ALPN values for each peer.
+      load_alpn_strings(j.cli_domain, j.srv_domain);
     }
   }
   {

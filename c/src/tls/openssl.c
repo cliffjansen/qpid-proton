@@ -60,6 +60,7 @@
 #include <stdio.h>
 #include <ctype.h>
 #include <string.h>
+#include <unistd.h>
 
 /** @file
  * Standalone raw buffer based SSL/TLS support API.
@@ -131,6 +132,8 @@ struct pn_tls_domain_t {
 
   bool has_certificate; // true when certificate configured
   bool allow_unsecured;
+  unsigned char *alpn_list;
+  unsigned int alpn_list_len;
 };
 
 struct pn_tls_t {
@@ -216,10 +219,14 @@ struct pn_tls_t {
 
   char *subject;
   X509 *peer_certificate;
+  unsigned char *alpn_list;
+  unsigned int alpn_list_len;
 };
 
 static void encrypt(pn_tls_t *);
 static void decrypt(pn_tls_t *);
+static int pn_tls_alpn_cb(SSL *ssn, const unsigned char **out, unsigned char *outlen, const unsigned char *in, unsigned int inlen, void *arg);
+
 
 static void tls_initialize_buffers(pn_tls_t *tls) {
   // Link together free lists
@@ -387,7 +394,8 @@ static void tls_fatal(pn_tls_t *tls, int ssl_err_type, int pn_tls_err) {
     tls->dec_rblocked = true;
     tls->dec_wblocked = true;
     tls->enc_closed = true;
-    if (ssl_err_type == SSL_ERROR_SYSCALL || ssl_err_type == SSL_ERROR_SSL) {
+// ZZZ doc says do this:    if (ssl_err_type == SSL_ERROR_SYSCALL || ssl_err_type == SSL_ERROR_SSL) {
+    if (ssl_err_type == SSL_ERROR_SYSCALL) {
       // OpenSSL requires immediate halt
       tls->can_shutdown = false;
       tls->enc_rblocked = true;
@@ -887,6 +895,7 @@ void pn_tls_domain_free( pn_tls_domain_t *domain )
     free(domain->keyfile_pw);
     free(domain->trusted_CAs);
     free(domain->ciphers);
+    free(domain->alpn_list);
     free(domain);
   }
 }
@@ -1122,6 +1131,7 @@ void pn_tls_free(pn_tls_t *ssl)
   if (ssl->subject) free(ssl->subject);
   if (ssl->peer_certificate) X509_free(ssl->peer_certificate);
   if (ssl->eresult_buffers) free(ssl->eresult_buffers);
+  if (ssl->alpn_list) free(ssl->alpn_list);
   free(ssl);
 }
 
@@ -1144,6 +1154,18 @@ pn_tls_t *pn_tls(pn_tls_domain_t *domain) {
   if (!domain) return NULL;
   pn_tls_t *tls = (pn_tls_t *) calloc(1, sizeof(pn_tls_t));
   if (!tls) return NULL;
+
+  if (domain->alpn_list_len) {
+    // make copy since small: avoid reference counting and thread safety management.
+    tls->alpn_list = (unsigned char *) malloc(domain->alpn_list_len);
+    if (!tls->alpn_list) {
+      free(tls);
+      return NULL;
+    }
+    memmove(tls->alpn_list, domain->alpn_list, domain->alpn_list_len);
+    tls->alpn_list_len = domain->alpn_list_len;
+  }
+
   tls->domain = domain;
   const char *env = getenv("PN_TLS_DBG");
   if (env && *env == '1') tls->validating = true;
@@ -1269,6 +1291,13 @@ static int init_ssl_socket(pn_tls_t *ssl, pn_tls_domain_t *domain)
     SSL_set_tlsext_host_name(ssl->ssl, ssl->peer_hostname);
   }
 #endif
+
+  if (ssl->alpn_list && ssl->mode == PN_TLS_MODE_CLIENT) {
+    if (SSL_set_alpn_protos(ssl->ssl, ssl->alpn_list, ssl->alpn_list_len) != 0) {
+      ssl_log(NULL, PN_LEVEL_ERROR, "Internal ALPN setup failure." );
+      return -1;
+    }
+  }  // server case is per domain set pn_tls_domain_set_alpn
 
   // restore session, if available
   ssn_restore(ssl);
@@ -2262,4 +2291,113 @@ void pn_tls_write_close(pn_tls_t* tls) {
   if (!tls->enc_closed) {
     tls->enc_closed = true;
   }
+}
+
+// ========  ALPN ========
+
+// returns false if invalid input strings, wire_bytes is NULL if no memory.
+static bool strings_to_wire_list(const char **protocols, size_t protocol_count, unsigned char **wire_bytes, size_t *wb_len) {
+  // First pass: validate and count len.
+  size_t total_len = 0;
+  size_t l;
+  if (protocol_count == 0)
+    return false;
+  for (size_t i = 0; i < protocol_count; i++) {
+    if (protocols[i] == NULL) return false;
+    l = strnlen(protocols[i], 255);
+    if (l == 0 || (l == 255 && protocols[i][255]))
+      return false;  // 0 or > 255 in length
+    total_len += l;
+  }
+  total_len += protocol_count;  // account for unsigned char length indicator for each string
+  if (total_len > 65535) return false;
+
+
+
+  // validated  
+  *wire_bytes = (unsigned char *) malloc(total_len);
+  if (!*wire_bytes) return true;
+  
+  *wb_len = total_len;
+  unsigned char *p = *wire_bytes;
+  
+  for (size_t i = 0; i < protocol_count; i++) {
+    l = strnlen(protocols[i], 255);
+    *p++ = (unsigned char) l;
+    memmove(p, protocols[i], l);
+    p += l;
+  }
+  return true;
+}
+
+// Callback from openssl on receipt of client_hello containing ALPN TLS extension.
+static int pn_tls_alpn_cb(SSL *ssn,
+                          const unsigned char **out,
+                          unsigned char *outlen,
+                          const unsigned char *in,
+                          unsigned int inlen,
+                          void *arg) {
+  pn_tls_t *tls = (pn_tls_t *)SSL_get_ex_data(ssn, tls_ex_data_index);
+  if (!tls) {
+    // TODO: log it. Should never happen.
+    return SSL_TLSEXT_ERR_ALERT_FATAL; // fail negotiation
+  }
+  assert(tls->mode == PN_TLS_MODE_SERVER);
+  if (!tls->alpn_list) {
+    return SSL_TLSEXT_ERR_NOACK;       // No ALPN configured on server, ignored.
+  }
+
+  unsigned char *proto_out;
+  unsigned char proto_outlen;
+  if (SSL_select_next_proto(&proto_out, &proto_outlen, tls->alpn_list, tls->alpn_list_len, in, inlen)
+      == OPENSSL_NPN_NO_OVERLAP) {
+    return SSL_TLSEXT_ERR_ALERT_FATAL;
+  }
+
+  // proto_out points into either tls->alpn_list (the server list) or into "in" (the client
+  // list).  The former survives the life of the tls session.  The latter is allowed to be set
+  // to "out" according to the documentation for cb in SSL_CTX_set_alpn_select_cb().  Either
+  // way, proto_out needs no copying.  Just some casting.
+
+  *out = (const unsigned char *) proto_out;
+  *outlen = proto_outlen;
+  return SSL_TLSEXT_ERR_OK;;
+}
+
+int pn_tls_domain_set_alpn(pn_tls_domain_t *domain, const char **protocols, size_t protocol_count) {
+  unsigned char *wire_bytes;
+  size_t wb_len;
+  if (protocols == NULL && protocol_count == 0) {
+    free(domain->alpn_list);
+    domain->alpn_list = NULL;
+    domain->alpn_list_len = 0;
+  } else {
+    if (!strings_to_wire_list(protocols, protocol_count, &wire_bytes, &wb_len))
+      return PN_ARG_ERR;
+    if (!wire_bytes)
+      return PN_OUT_OF_MEMORY;
+    free(domain->alpn_list);
+    domain->alpn_list = wire_bytes;
+    domain->alpn_list_len = wb_len;
+  }
+  // Never turn off the callback in case outstanding TLS objects to be started.
+  if (domain->alpn_list && domain->mode == PN_TLS_MODE_SERVER)
+    SSL_CTX_set_alpn_select_cb(domain->ctx, pn_tls_alpn_cb, NULL);
+    
+  return 0;
+  // free on domain free, copy on ssl creation
+}
+
+bool pn_tls_get_alpn(pn_tls_t *tls, char *buffer, size_t size) {
+  const unsigned char *proto = NULL;
+  unsigned int proto_len = 0;
+  if (tls) {
+    SSL_get0_alpn_selected(tls->ssl, &proto, &proto_len);
+    if (proto_len && size > proto_len) {
+      memmove(buffer, proto, proto_len);
+      buffer[proto_len] = 0;
+      return true;
+    }
+  }
+  return false;
 }
