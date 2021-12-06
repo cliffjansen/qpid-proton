@@ -2351,6 +2351,7 @@ static int pn_tls_alpn_cb(SSL *ssn,
   unsigned char proto_outlen;
   if (SSL_select_next_proto(&proto_out, &proto_outlen, tls->alpn_list, tls->alpn_list_len, in, inlen)
       == OPENSSL_NPN_NO_OVERLAP) {
+    printf("ZZZ fatal time\n");
     return SSL_TLSEXT_ERR_ALERT_FATAL;
   }
 
@@ -2364,7 +2365,7 @@ static int pn_tls_alpn_cb(SSL *ssn,
   return SSL_TLSEXT_ERR_OK;;
 }
 
-int pn_tls_domain_set_alpn(pn_tls_domain_t *domain, const char **protocols, size_t protocol_count) {
+int pn_tls_domain_set_alpn_protocols(pn_tls_domain_t *domain, const char **protocols, size_t protocol_count) {
   unsigned char *wire_bytes;
   size_t wb_len;
   if (protocols == NULL && protocol_count == 0) {
@@ -2388,7 +2389,7 @@ int pn_tls_domain_set_alpn(pn_tls_domain_t *domain, const char **protocols, size
   // free on domain free, copy on ssl creation
 }
 
-bool pn_tls_get_alpn(pn_tls_t *tls, char *buffer, size_t size) {
+bool pn_tls_get_alpn_protocol(pn_tls_t *tls, char *buffer, size_t size) {
   const unsigned char *proto = NULL;
   unsigned int proto_len = 0;
   if (tls) {

@@ -218,7 +218,7 @@ static void check_alpn(jabber_connection_t* jc) {
 
   if (!jc->alpn_protocol) {
     char buf[256];  // max possible size including terminating null
-    if (pn_tls_get_alpn(jc->tls, buf, 256)) {
+    if (pn_tls_get_alpn_protocol(jc->tls, buf, 256)) {
       size_t l = strnlen(buf, 256);
       assert(l > 0 && l < 256);
       jc->alpn_protocol = (char *) malloc(l+1);
@@ -237,13 +237,13 @@ static void load_alpn_strings(pn_tls_domain_t *cli_domain, pn_tls_domain_t *srv_
   protos[0] = "jibberjabber";
   protos[1] = "jabber/v1";   // expected winner
   protos[2] = "piglatin";
-  pn_tls_domain_set_alpn(srv_domain, protos, 3);
+  pn_tls_domain_set_alpn_protocols(srv_domain, protos, 3);
   //client
   protos[0] = "jabber/v2";
   protos[1] = "piglatin";
   protos[2] = "jabber/v1";   // expected winner
   protos[3] = "ghost";
-  pn_tls_domain_set_alpn(cli_domain, protos, 4);
+  pn_tls_domain_set_alpn_protocols(cli_domain, protos, 4);
 }
 
 static void handle_outgoing(jabber_connection_t* jc) {

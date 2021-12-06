@@ -583,7 +583,7 @@ PN_TLS_EXTERN size_t pn_tls_get_session_error_string(pn_tls_t* tls, char *buf, s
  * @param[in] count the size of the protocols array.
  * @return 0 on success, PN_ARG_ERROR if any array pointers are null or any protocol names exceed 255 bytes in length. PN_OUT_OF_MEMORY if memory allocation fails.
 */
-PN_TLS_EXTERN int pn_tls_domain_set_alpn(pn_tls_domain_t *domain, const char **protocols, size_t protocol_count);
+PN_TLS_EXTERN int pn_tls_domain_set_alpn_protocols(pn_tls_domain_t *domain, const char **protocols, size_t protocol_count);
 
 /**
  * Get the name of the negotiated application protocol.
@@ -596,7 +596,7 @@ PN_TLS_EXTERN int pn_tls_domain_set_alpn(pn_tls_domain_t *domain, const char **p
  * @param[in] size maximum number of bytes in buffer.
  * @return True if the protocol name is written to buffer, False if no application protocol in use or the buffer is too small to hold the protocol name and null terminating byte.
  */
-PN_TLS_EXTERN bool pn_tls_get_alpn(pn_tls_t *tls, char *buffer, size_t size);
+PN_TLS_EXTERN bool pn_tls_get_alpn_protocol(pn_tls_t *tls, char *buffer, size_t size);
 
 // TODO:  Tracing.  Session tickets.
 
