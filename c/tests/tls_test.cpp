@@ -42,19 +42,19 @@ using Catch::Matchers::Equals;
 #if defined(_WIN32)
 #  define CERTIFICATE(NAME) SSL_FILE(NAME "-certificate.p12")
 #  define SET_CREDENTIALS(DOMAIN, NAME)                                 \
-  pn_tls_domain_set_credentials(DOMAIN, SSL_FILE(NAME "-full.p12"), "", SSL_PW(NAME))
+  pn_tls_config_set_credentials(DOMAIN, SSL_FILE(NAME "-full.p12"), "", SSL_PW(NAME))
 #else
 #  define CERTIFICATE(NAME) SSL_FILE(NAME "-certificate.pem")
 #  define SET_CREDENTIALS(DOMAIN, NAME)                                 \
-  pn_tls_domain_set_credentials(DOMAIN, CERTIFICATE(NAME), SSL_FILE(NAME "-private-key.pem"), SSL_PW(NAME))
+  pn_tls_config_set_credentials(DOMAIN, CERTIFICATE(NAME), SSL_FILE(NAME "-private-key.pem"), SSL_PW(NAME))
 #endif
 
 
 
 TEST_CASE("tls foo and bar") {
-  pn_tls_domain_t *client_domain = pn_tls_domain(PN_TLS_MODE_CLIENT);
+  pn_tls_config_t *client_domain = pn_tls_config(PN_TLS_MODE_CLIENT);
   REQUIRE(client_domain);
-  pn_tls_domain_t *server_domain = pn_tls_domain(PN_TLS_MODE_SERVER);
+  pn_tls_config_t *server_domain = pn_tls_config(PN_TLS_MODE_SERVER);
   REQUIRE(server_domain);
   pn_tls_t *cli_tls = pn_tls(client_domain);
   CHECK(cli_tls == NULL); // No default domain configuration
@@ -63,18 +63,18 @@ TEST_CASE("tls foo and bar") {
 
   pn_tls_free(cli_tls);
   pn_tls_free(srv_tls);
-  pn_tls_domain_free(client_domain);
-  pn_tls_domain_free(server_domain);
+  pn_tls_config_free(client_domain);
+  pn_tls_config_free(server_domain);
 }
 
 TEST_CASE("plain old fubar") {
-  pn_tls_domain_t *client_domain = pn_tls_domain(PN_TLS_MODE_CLIENT);
+  pn_tls_config_t *client_domain = pn_tls_config(PN_TLS_MODE_CLIENT);
   REQUIRE(client_domain);
-  pn_tls_domain_t *server_domain = pn_tls_domain(PN_TLS_MODE_SERVER);
+  pn_tls_config_t *server_domain = pn_tls_config(PN_TLS_MODE_SERVER);
   REQUIRE(server_domain);
 
   REQUIRE(SET_CREDENTIALS(server_domain, "tserver") == 0);  
-  REQUIRE(pn_tls_domain_set_peer_authentication(client_domain, PN_TLS_VERIFY_PEER, NULL) == 0);
+  REQUIRE(pn_tls_config_set_peer_authentication(client_domain, PN_TLS_VERIFY_PEER, NULL) == 0);
 
 
   pn_tls_t *cli_tls = pn_tls(client_domain);
@@ -84,7 +84,7 @@ TEST_CASE("plain old fubar") {
   CHECK(false);
   pn_tls_free(cli_tls);
   pn_tls_free(srv_tls);
-  pn_tls_domain_free(client_domain);
-  pn_tls_domain_free(server_domain);
+  pn_tls_config_free(client_domain);
+  pn_tls_config_free(server_domain);
 }
 

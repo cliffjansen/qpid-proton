@@ -52,34 +52,31 @@ extern "C" {
  * This TLS implementation defines the following objects:
 
  * @li A top-level object that stores the configuration used by one or more TLS
- * sessions (pn_tls_domain_t).
+ * sessions (pn_tls_config_t).
  * @li A per-connection TLS session object that performs the encryption/authentication
  * associated with the transport (pn_tls_t).
  *
- * The pn_tls_domain_t is used to construct an TLS session (pn_tls_t).  The
- * session "adopts" its configuration from the pn_tls_domain_t that was used to create it.
- * For example, pn_tls_domain_t can be configured as either a "client" or a "server".  TLS
+ * The pn_tls_config_t is used to construct an TLS session (pn_tls_t).  The
+ * session "adopts" its configuration from the pn_tls_config_t that was used to create it.
+ * For example, pn_tls_config_t can be configured as either a "client" or a "server".  TLS
  * sessions constructed from this domain will perform the corresponding role (either
  * client or server).
  *
- * If an TLS session is created without a pn_tls_domain_t object then a default will be used
+ * If an TLS session is created without a pn_tls_config_t object then a default will be used
  * (see ::pn_tls_init()).
  *
  * If either an TLS server or client needs to identify itself with the remote node, it
- * must have its TLS certificate configured (see ::pn_tls_domain_set_credentials()).
+ * must have its TLS certificate configured (see ::pn_tls_config_set_credentials()).
  *
  * If either an TLS server or client needs to verify the identity of the remote node, it
  * must have its database of trusted CAs configured. By default this will be set up to use
  * the default system database of trusted CA. But this can be changed
- * (see ::pn_tls_domain_set_trusted_ca_db()).
+ * (see ::pn_tls_config_set_trusted_certs()).
  *
  * The level of verification required of the remote may be configured (see
- * ::pn_tls_domain_set_peer_authentication)
- *
- * Support for TLS Client Session resume is provided (see ::pn_tls_init,
- * ::pn_tls_resume_status).
+ * ::pn_tls_config_set_peer_authentication)
  */
-typedef struct pn_tls_domain_t pn_tls_domain_t;
+typedef struct pn_tls_config_t pn_tls_config_t;
 
 /**
  * @see pn_tls
@@ -95,15 +92,6 @@ typedef enum {
 } pn_tls_mode_t;
 
 /**
- * Indicates whether an TLS session has been resumed.
- */
-typedef enum {
-  PN_TLS_RESUME_UNKNOWN,        /**< Session resume state unknown/not supported */
-  PN_TLS_RESUME_NEW,            /**< Session renegotiated - not resumed */
-  PN_TLS_RESUME_REUSED          /**< Session resumed from previous session. */
-} pn_tls_resume_status_t;
-
-/**
  * Error codes
  */
 
@@ -113,13 +101,6 @@ typedef enum {
 #define PN_TLS_AUTHENTICATION_ERR (-3)  /**< Peer authentication failure */
 #define PN_TLS_STATE_ERR (-4)           /**< Requested action not possible due to session state */
 
-
-/**
- * Tests for TLS implementation present
- *
- *  @return true if we support TLS, false if not
- */
-PN_TLS_EXTERN bool pn_tls_present( void );
 
 /**
  * Create an TLS configuration domain
@@ -132,15 +113,15 @@ PN_TLS_EXTERN bool pn_tls_present( void );
  * with this domain.
  * @return a pointer to the TLS domain, if TLS support is present.
  */
-PN_TLS_EXTERN pn_tls_domain_t *pn_tls_domain(pn_tls_mode_t mode);
+PN_TLS_EXTERN pn_tls_config_t *pn_tls_config(pn_tls_mode_t mode);
 
 /**
  * Release an TLS configuration domain
  *
- * This method frees an TLS domain object allocated by ::pn_tls_domain.
+ * This method frees an TLS domain object allocated by ::pn_tls_config.
  * @param[in] domain the domain to destroy.
  */
-PN_TLS_EXTERN void pn_tls_domain_free(pn_tls_domain_t *domain);
+PN_TLS_EXTERN void pn_tls_config_free(pn_tls_config_t *domain);
 
 /**
  * Set the certificate that identifies the local node to the remote.
@@ -166,7 +147,7 @@ PN_TLS_EXTERN void pn_tls_domain_free(pn_tls_domain_t *domain);
  * protected.
  * @return 0 on success
  */
-PN_TLS_EXTERN int  pn_tls_domain_set_credentials(pn_tls_domain_t *domain,
+PN_TLS_EXTERN int  pn_tls_config_set_credentials(pn_tls_config_t *domain,
                                             const char *credential_1,
                                             const char *credential_2,
                                             const char *password);
@@ -191,7 +172,7 @@ PN_TLS_EXTERN int  pn_tls_domain_set_credentials(pn_tls_domain_t *domain,
  * @param[in] certificate_db database of trusted CAs, used to authenticate the peer.
  * @return 0 on success
  */
-PN_TLS_EXTERN int pn_tls_domain_set_trusted_ca_db(pn_tls_domain_t *domain,
+PN_TLS_EXTERN int pn_tls_config_set_trusted_certs(pn_tls_config_t *domain,
                                 const char *certificate_db);
 
 /**
@@ -226,10 +207,10 @@ typedef enum {
  * Once certificates and trusted CAs are configured, peer verification can be enabled.
  *
  * @note In order to verify a peer, a trusted CA must be configured. See
- * ::pn_tls_domain_set_trusted_ca_db().
+ * ::pn_tls_config_set_trusted_certs().
  *
  * @note Servers must provide their own certificate when verifying a peer.  See
- * ::pn_tls_domain_set_credentials().
+ * ::pn_tls_config_set_credentials().
  *
  * @note This setting effects only those pn_tls_t objects created after this call
  * returns.  pn_tls_t objects created before invoking this method will use the domain's
@@ -241,24 +222,9 @@ typedef enum {
  * to the peer client if the server has been configured to verify its peer.
  * @return 0 on success
  */
-PN_TLS_EXTERN int pn_tls_domain_set_peer_authentication(pn_tls_domain_t *domain,
+PN_TLS_EXTERN int pn_tls_config_set_peer_authentication(pn_tls_config_t *domain,
                                                     const pn_tls_verify_mode_t mode,
                                                     const char *trusted_CAs);
-
-/**
- * Configure the list of permitted TLS protocols
- *
- * @param[in] domain the tls domain to configure.
- * @param[in] protocols string representing the protocol list.
- * This list is a space separated string of the allowed TLS protocols,
- * The current possibilities are TLSv1 TLSv1.1 TLSv1.2 TLSv1.3. None of the earlier TLS
- * protocols are allowed for security reason.
- *
- * @note If this API not called then all the TLS protocols are allowed. The API only acts to
- * restrict the allowed protocols to the specified set.
- * @return 0 on success
- */
-PN_TLS_EXTERN int pn_tls_domain_set_protocols(pn_tls_domain_t *domain, const char *protocols);
 
 /**
  * Configure the list of permitted ciphers
@@ -270,21 +236,7 @@ PN_TLS_EXTERN int pn_tls_domain_set_protocols(pn_tls_domain_t *domain, const cha
  * @param[in] ciphers string representing the cipher list
  * @return 0 on success
  */
-PN_TLS_EXTERN int pn_tls_domain_set_ciphers(pn_tls_domain_t *domain, const char *ciphers);
-
-/**
- * **Deprecated** - Use ::pn_transport_require_encryption()
- *
- * Permit a server to accept connection requests from non-TLS clients.
- *
- * This configures the server to "sniff" the incoming client data stream, and dynamically
- * determine whether TLS/TLS is being used.  This option is disabled by default: only
- * clients using TLS/TLS are accepted.
- *
- * @param[in] domain the domain (server) that will accept the client connections.
- * @return 0 on success
- */
-PN_TLS_EXTERN int pn_tls_domain_allow_unsecured_client(pn_tls_domain_t *domain);
+PN_TLS_EXTERN int pn_tls_config_set_impl_ciphers(pn_tls_config_t *domain, const char *ciphers);
 
 /**
  * Create a new TLS session object derived from a domain.
@@ -292,7 +244,7 @@ PN_TLS_EXTERN int pn_tls_domain_allow_unsecured_client(pn_tls_domain_t *domain);
  * @param[in] domain the domain that configures the TLS session.
  * @return a pointer to the TLS object.  Returns NULL if memory allocation fails or if domain is NULL.
  */
-PN_TLS_EXTERN pn_tls_t *pn_tls(pn_tls_domain_t *domain);
+PN_TLS_EXTERN pn_tls_t *pn_tls(pn_tls_config_t *domain);
 
 /**
  * Start a TLS session.
@@ -322,7 +274,7 @@ PN_TLS_EXTERN void pn_tls_free(pn_tls_t *tls);
  * @param[in] size maximum number of bytes in buffer.
  * @return True if cipher name written to buffer, False if no cipher in use.
  */
-PN_TLS_EXTERN bool pn_tls_get_cipher_name(pn_tls_t *tls, char *buffer, size_t size);
+PN_TLS_EXTERN bool pn_tls_get_cipher(pn_tls_t *tls, char *buffer, size_t size);
 
 /**
  * Get the SSF (security strength factor) of the Cipher that is currently in use.
@@ -344,22 +296,7 @@ PN_TLS_EXTERN int pn_tls_get_ssf(pn_tls_t *tls);
  * @return True if the version information was written to buffer, False if TLS connection
  * not ready.
  */
-PN_TLS_EXTERN bool pn_tls_get_protocol_name(pn_tls_t *tls, char *buffer, size_t size);
-
-/**
- * Check whether the state has been resumed.
- *
- * Used for client session resume.  When called on an active session, indicates whether
- * the state has been resumed from a previous session.
- *
- * @note This is a best-effort service - there is no guarantee that the remote server will
- * accept the resumed parameters.  The remote server may choose to ignore these
- * parameters, and request a re-negotiation instead.
- *
- * @param[in] tls the tls session to check
- * @return status code indicating whether or not the session has been resumed.
- */
-PN_TLS_EXTERN pn_tls_resume_status_t pn_tls_resume_status(pn_tls_t *tls);
+PN_TLS_EXTERN bool pn_tls_get_protocol_version(pn_tls_t *tls, char *buffer, size_t size);
 
 /**
  * Set the expected identity of the remote peer.
@@ -376,7 +313,7 @@ PN_TLS_EXTERN pn_tls_resume_status_t pn_tls_resume_status(pn_tls_t *tls);
  * (potential imposter), and the TLS connection is aborted.
  *
  * @note Verification of the hostname is only done if PN_TLS_VERIFY_PEER_NAME is enabled.
- * See ::pn_tls_domain_set_peer_authentication.
+ * See ::pn_tls_config_set_peer_authentication.
  *
  * @param[in] tls the tls session.
  * @param[in] hostname the expected identity of the remote. Must conform to the syntax as
@@ -467,8 +404,8 @@ PN_TLS_EXTERN bool pn_tls_get_encrypt_output_pending(pn_tls_t *tls);
 PN_TLS_EXTERN bool pn_tls_get_decrypt_output_pending(pn_tls_t *tls);
 
 
-// True if peers have negotiated a TLS session.  False indicates handshake in progress.
-PN_TLS_EXTERN bool pn_tls_can_encrypt(pn_tls_t *tls);
+// True if peers have negotiated a TLS session.  False indicates handshake in progress or protocol error.
+PN_TLS_EXTERN bool pn_tls_is_secure(pn_tls_t *tls);
 
 
 // ----------------------------------------------------------------------------------------------------------------------
@@ -583,7 +520,7 @@ PN_TLS_EXTERN size_t pn_tls_get_session_error_string(pn_tls_t* tls, char *buf, s
  * @param[in] count the size of the protocols array.
  * @return 0 on success, PN_ARG_ERROR if any array pointers are null or any protocol names exceed 255 bytes in length. PN_OUT_OF_MEMORY if memory allocation fails.
 */
-PN_TLS_EXTERN int pn_tls_domain_set_alpn_protocols(pn_tls_domain_t *domain, const char **protocols, size_t protocol_count);
+PN_TLS_EXTERN int pn_tls_config_set_alpn_protocols(pn_tls_config_t *domain, const char **protocols, size_t protocol_count);
 
 /**
  * Get the name of the negotiated application protocol.

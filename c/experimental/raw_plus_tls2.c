@@ -63,11 +63,11 @@
 #if defined(_WIN32)
 #  define CERTIFICATE(NAME) SSL_FILE(NAME "-certificate.p12")
 #  define SET_CREDENTIALS(DOMAIN, NAME)                                 \
-  pn_tls_domain_set_credentials(DOMAIN, SSL_FILE(NAME "-full.p12"), "", SSL_PW)
+  pn_tls_config_set_credentials(DOMAIN, SSL_FILE(NAME "-full.p12"), "", SSL_PW)
 #else
 #  define CERTIFICATE(NAME) SSL_FILE(NAME "-certificate.pem")
 #  define SET_CREDENTIALS(DOMAIN, NAME)                                 \
-  pn_tls_domain_set_credentials(DOMAIN, CERTIFICATE(NAME), SSL_FILE(NAME "-private-key.pem"), SSL_PW)
+  pn_tls_config_set_credentials(DOMAIN, CERTIFICATE(NAME), SSL_FILE(NAME "-private-key.pem"), SSL_PW)
 #endif
 
 // A raw buffer "pool", in name only
@@ -96,8 +96,8 @@ static size_t size_t_min(size_t a, size_t b) {
 typedef struct jabber_t {
   pn_proactor_t *proactor;
   size_t threads;
-  pn_tls_domain_t *srv_domain;
-  pn_tls_domain_t *cli_domain;
+  pn_tls_config_t *srv_domain;
+  pn_tls_config_t *cli_domain;
   const char *host;
   const char *port;
   pn_listener_t *listener;
@@ -231,19 +231,19 @@ static void check_alpn(jabber_connection_t* jc) {
   }
 }
 
-static void load_alpn_strings(pn_tls_domain_t *cli_domain, pn_tls_domain_t *srv_domain) {
+static void load_alpn_strings(pn_tls_config_t *cli_domain, pn_tls_config_t *srv_domain) {
   const char *protos[4];
   // server...
   protos[0] = "jibberjabber";
   protos[1] = "jabber/v1";   // expected winner
   protos[2] = "piglatin";
-  pn_tls_domain_set_alpn_protocols(srv_domain, protos, 3);
+  pn_tls_config_set_alpn_protocols(srv_domain, protos, 3);
   //client
   protos[0] = "jabber/v2";
   protos[1] = "piglatin";
   protos[2] = "jabber/v1";   // expected winner
   protos[3] = "ghost";
-  pn_tls_domain_set_alpn_protocols(cli_domain, protos, 4);
+  pn_tls_config_set_alpn_protocols(cli_domain, protos, 4);
 }
 
 static void handle_outgoing(jabber_connection_t* jc) {
@@ -291,7 +291,7 @@ static void handle_outgoing(jabber_connection_t* jc) {
   } else {
     // TLS
 
-    if (pn_tls_can_encrypt(jc->tls) && jc->jabber_turn && !jc->tls_closing) {
+    if (pn_tls_is_secure(jc->tls) && jc->jabber_turn && !jc->tls_closing) {
       assert(jc->alpn_protocol || !jc->parent->alpn_enabled);
       // Add jabber data if there is room.
       size_t max_bufs_to_encrypt = size_t_min(4, pn_tls_get_encrypt_input_buffer_capacity(jc->tls));
@@ -640,13 +640,13 @@ int main(int argc, char **argv) {
   j.proactor = pn_proactor();
   j.threads = 4;
   if (use_tls) {
-    j.srv_domain = pn_tls_domain(PN_TLS_MODE_SERVER);
+    j.srv_domain = pn_tls_config(PN_TLS_MODE_SERVER);
     if (SET_CREDENTIALS(j.srv_domain, "tserver") != 0) {
       printf("Failed to set up server certificate: %s, private key: %s\n", CERTIFICATE("tserver"), SSL_FILE("tserver-private-key.pem"));
       exit(1);
     }
-    j.cli_domain = pn_tls_domain(PN_TLS_MODE_CLIENT); //  PN_TLS_VERIFY_PEER_NAME by default
-    if (pn_tls_domain_set_trusted_ca_db(j.cli_domain, CERTIFICATE("tserver")) != 0) {
+    j.cli_domain = pn_tls_config(PN_TLS_MODE_CLIENT); //  PN_TLS_VERIFY_PEER_NAME by default
+    if (pn_tls_config_set_trusted_certs(j.cli_domain, CERTIFICATE("tserver")) != 0) {
       printf("CA failure\n");
       exit(1);
     }
@@ -678,9 +678,9 @@ int main(int argc, char **argv) {
   pn_proactor_free(j.proactor);
   free(threads);
   if (j.srv_domain)
-    pn_tls_domain_free(j.srv_domain);
+    pn_tls_config_free(j.srv_domain);
   if (j.cli_domain)
-    pn_tls_domain_free(j.cli_domain);
+    pn_tls_config_free(j.cli_domain);
   return 0;
   }
 }

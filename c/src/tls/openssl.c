@@ -112,7 +112,7 @@ typedef struct pn_tls_session_t pn_tls_session_t;
 
 static int tls_ex_data_index;
 
-struct pn_tls_domain_t {
+struct pn_tls_config_t {
 
   SSL_CTX       *ctx;
 
@@ -131,7 +131,6 @@ struct pn_tls_domain_t {
   pn_tls_verify_mode_t verify_mode;
 
   bool has_certificate; // true when certificate configured
-  bool allow_unsecured;
   unsigned char *alpn_list;
   unsigned int alpn_list_len;
 };
@@ -184,7 +183,7 @@ struct pn_tls_t {
 
   pn_tls_mode_t mode;
   pn_tls_verify_mode_t verify_mode;
-  pn_tls_domain_t *domain;
+  pn_tls_config_t *domain;
   const char    *session_id;
   const char *peer_hostname;
   SSL *ssl;
@@ -477,7 +476,7 @@ uint32_t pn_tls_get_last_encrypt_output_buffer_size(pn_tls_t *tls) {
 
 /* */
 static int keyfile_pw_cb(char *buf, int size, int rwflag, void *userdata);
-static int init_ssl_socket(pn_tls_t *, pn_tls_domain_t *);
+static int init_ssl_socket(pn_tls_t *, pn_tls_config_t *);
 static void release_ssl_socket( pn_tls_t * );
 static X509 *get_peer_certificate(pn_tls_t *ssl);
 
@@ -788,14 +787,9 @@ static void ssn_restore(pn_tls_t *ssl) {
 
 /** Public API - visible to application code */
 
-bool pn_tls_present(void)
-{
-  return true;
-}
-
 static bool ensure_initialized(void);
 
-static bool pni_init_ssl_domain( pn_tls_domain_t * domain, pn_tls_mode_t mode )
+static bool pni_init_ssl_domain( pn_tls_config_t * domain, pn_tls_mode_t mode )
 {
   if (!ensure_initialized()) {
       ssl_log_error("Unable to initialize OpenSSL library");
@@ -818,7 +812,7 @@ static bool pni_init_ssl_domain( pn_tls_domain_t * domain, pn_tls_mode_t mode )
     SSL_CTX_set_session_cache_mode(domain->ctx, SSL_SESS_CACHE_CLIENT);
 
     // By default, require peer name verification - this is a safe default
-    if (pn_tls_domain_set_peer_authentication( domain, PN_TLS_VERIFY_PEER_NAME, NULL )) {
+    if (pn_tls_config_set_peer_authentication( domain, PN_TLS_VERIFY_PEER_NAME, NULL )) {
       SSL_CTX_free(domain->ctx);
       return false;
     }
@@ -832,7 +826,7 @@ static bool pni_init_ssl_domain( pn_tls_domain_t * domain, pn_tls_mode_t mode )
     }
     // By default, allow anonymous ciphers and do no authentication so certificates are
     // not required 'out of the box'; authenticating the client can be done by SASL.
-    if (pn_tls_domain_set_peer_authentication( domain, PN_TLS_ANONYMOUS_PEER, NULL )) {
+    if (pn_tls_config_set_peer_authentication( domain, PN_TLS_ANONYMOUS_PEER, NULL )) {
       SSL_CTX_free(domain->ctx);
       return false;
     }
@@ -874,9 +868,9 @@ static bool pni_init_ssl_domain( pn_tls_domain_t * domain, pn_tls_mode_t mode )
   return true;
 }
 
-pn_tls_domain_t *pn_tls_domain( pn_tls_mode_t mode )
+pn_tls_config_t *pn_tls_config( pn_tls_mode_t mode )
 {
-  pn_tls_domain_t *domain = (pn_tls_domain_t *) calloc(1, sizeof(pn_tls_domain_t));
+  pn_tls_config_t *domain = (pn_tls_config_t *) calloc(1, sizeof(pn_tls_config_t));
   if (!domain) return NULL;
 
   if (!pni_init_ssl_domain(domain, mode)) {
@@ -887,7 +881,7 @@ pn_tls_domain_t *pn_tls_domain( pn_tls_mode_t mode )
   return domain;
 }
 
-void pn_tls_domain_free( pn_tls_domain_t *domain )
+void pn_tls_config_free( pn_tls_config_t *domain )
 {
   if (--domain->ref_count == 0) {
 
@@ -901,7 +895,7 @@ void pn_tls_domain_free( pn_tls_domain_t *domain )
 }
 
 
-int pn_tls_domain_set_credentials( pn_tls_domain_t *domain,
+int pn_tls_config_set_credentials( pn_tls_config_t *domain,
                                    const char *certificate_file,
                                    const char *private_key_file,
                                    const char *password)
@@ -943,7 +937,7 @@ int pn_tls_domain_set_credentials( pn_tls_domain_t *domain,
   return 0;
 }
 
-int pn_tls_domain_set_ciphers(pn_tls_domain_t *domain, const char *ciphers)
+int pn_tls_config_set_impl_ciphers(pn_tls_config_t *domain, const char *ciphers)
 {
   if (!SSL_CTX_set_cipher_list(domain->ctx, ciphers)) {
     ssl_log_error("Failed to set cipher list to %s", ciphers);
@@ -954,67 +948,7 @@ int pn_tls_domain_set_ciphers(pn_tls_domain_t *domain, const char *ciphers)
   return 0;
 }
 
-int pn_tls_domain_set_protocols(pn_tls_domain_t *domain, const char *protocols)
-{
-  static const struct {
-    const char *name;
-    const long option;
-  } protocol_options[] =
-  {
-    {"TLSv1",   SSL_OP_NO_TLSv1},
-    {"TLSv1.1", SSL_OP_NO_TLSv1_1},
-    {"TLSv1.2", SSL_OP_NO_TLSv1_2},
-#ifdef SSL_OP_NO_TLSv1_3
-    {"TLSv1.3", SSL_OP_NO_TLSv1_3},
-#endif
-  };
-  static const char seps[]    = " ,;";
-  static const long all_prots =
-    SSL_OP_NO_TLSv1
-    | SSL_OP_NO_TLSv1_1
-    | SSL_OP_NO_TLSv1_2
-#ifdef SSL_OP_NO_TLSv1_3
-    | SSL_OP_NO_TLSv1_3
-#endif
-    ;
-
-  // Start with all protocols turned off
-  long options = all_prots;
-
-  // For each separate token in protocols
-  const char *token = protocols;
-  while (*token!=0) {
-    // Find next separator
-    size_t tsize = strcspn(token, seps);
-    while (tsize==0 && *token!=0) {
-      ++token;
-      tsize = strcspn(token, seps);
-    }
-    if (tsize==0) break; // No more tokens
-
-    // Linear search the possibilities for the option to set
-    for (size_t i = 0; i<sizeof(protocol_options)/sizeof(*protocol_options); ++i) {
-      if (strncmp(token, protocol_options[i].name, tsize)==0) {
-        options &= ~protocol_options[i].option;
-        goto found;
-      }
-    }
-    // Didn't find any match - error
-    return PN_ARG_ERR;
-
-found:
-    token += tsize;
-  }
-
-  // Check if we found anything
-  if (options==all_prots) return PN_ARG_ERR;
-
-  SSL_CTX_clear_options(domain->ctx, all_prots);
-  SSL_CTX_set_options(domain->ctx, options);
-  return 0;
-}
-
-int pn_tls_domain_set_trusted_ca_db(pn_tls_domain_t *domain,
+int pn_tls_config_set_trusted_certs(pn_tls_config_t *domain,
                                     const char *certificate_db)
 {
   if (!domain) return -1;
@@ -1046,7 +980,7 @@ int pn_tls_domain_set_trusted_ca_db(pn_tls_domain_t *domain,
 }
 
 
-int pn_tls_domain_set_peer_authentication(pn_tls_domain_t *domain,
+int pn_tls_config_set_peer_authentication(pn_tls_config_t *domain,
                                           const pn_tls_verify_mode_t mode,
                                           const char *trusted_CAs)
 {
@@ -1068,7 +1002,7 @@ int pn_tls_domain_set_peer_authentication(pn_tls_domain_t *domain,
         return -1;
       }
       if (!domain->has_certificate) {
-        ssl_log(NULL, PN_LEVEL_ERROR, "Error: Server cannot verify peer without configuring a certificate, use pn_tls_domain_set_credentials()");
+        ssl_log(NULL, PN_LEVEL_ERROR, "Error: Server cannot verify peer without configuring a certificate, use pn_tls_config_set_credentials()");
         return -1;
       }
 
@@ -1135,22 +1069,16 @@ void pn_tls_free(pn_tls_t *ssl)
   free(ssl);
 }
 
-static int pni_tls_init(pn_tls_t *ssl, pn_tls_domain_t *domain, const char *unused)
+static int pni_tls_init(pn_tls_t *ssl, pn_tls_config_t *domain, const char *unused)
 {
   if (!ssl) return -1;
 
   ssl->mode = domain->mode;
   ssl->verify_mode = domain->verify_mode;
-
-  // TODO: confirm allow_unsecured is not necessary.
-  // If SSL doesn't specifically allow skipping encryption, require SSL
-  // TODO: This is a probably a stop-gap until allow_unsecured is removed
-  //  if (!domain->allow_unsecured) transport->encryption_required = true;
-
   return init_ssl_socket(ssl, domain);
 }
 
-pn_tls_t *pn_tls(pn_tls_domain_t *domain) {
+pn_tls_t *pn_tls(pn_tls_config_t *domain) {
   if (!domain) return NULL;
   pn_tls_t *tls = (pn_tls_t *) calloc(1, sizeof(pn_tls_t));
   if (!tls) return NULL;
@@ -1205,17 +1133,6 @@ int pn_tls_stop(pn_tls_t *tls) {
   return 0;
 }
 
-int pn_tls_domain_allow_unsecured_client(pn_tls_domain_t *domain)
-{
-  if (!domain) return -1;
-  if (domain->mode != PN_TLS_MODE_SERVER) {
-    ssl_log(NULL, PN_LEVEL_ERROR, "Cannot permit unsecured clients - not a server.");
-    return -1;
-  }
-  domain->allow_unsecured = true;
-  return 0;
-}
-
 int pn_tls_get_ssf(pn_tls_t *ssl)
 {
   const SSL_CIPHER *c;
@@ -1226,7 +1143,7 @@ int pn_tls_get_ssf(pn_tls_t *ssl)
   return 0;
 }
 
-bool pn_tls_get_cipher_name(pn_tls_t *ssl, char *buffer, size_t size )
+bool pn_tls_get_cipher(pn_tls_t *ssl, char *buffer, size_t size )
 {
   const SSL_CIPHER *c;
 
@@ -1241,7 +1158,7 @@ bool pn_tls_get_cipher_name(pn_tls_t *ssl, char *buffer, size_t size )
   return false;
 }
 
-bool pn_tls_get_protocol_name(pn_tls_t *ssl, char *buffer, size_t size )
+bool pn_tls_get_protocol_version(pn_tls_t *ssl, char *buffer, size_t size )
 {
   const SSL_CIPHER *c;
 
@@ -1271,7 +1188,7 @@ static int keyfile_pw_cb(char *buf, int size, int rwflag, void *userdata)
 
 
 
-static int init_ssl_socket(pn_tls_t *ssl, pn_tls_domain_t *domain)
+static int init_ssl_socket(pn_tls_t *ssl, pn_tls_config_t *domain)
 {
   if (ssl->ssl) return 0;
   if (!domain) return -1;
@@ -1297,7 +1214,7 @@ static int init_ssl_socket(pn_tls_t *ssl, pn_tls_domain_t *domain)
       ssl_log(NULL, PN_LEVEL_ERROR, "Internal ALPN setup failure." );
       return -1;
     }
-  }  // server case is per domain set pn_tls_domain_set_alpn
+  }  // server case is per domain set pn_tls_config_set_alpn
 
   // restore session, if available
   ssn_restore(ssl);
@@ -1350,17 +1267,6 @@ static void release_ssl_socket(pn_tls_t *ssl)
   ssl->bio_ssl_io = NULL;
   ssl->bio_net_io = NULL;
   ssl->ssl = NULL;
-}
-
-pn_tls_resume_status_t pn_tls_resume_status(pn_tls_t *ssl)
-{
-  if (!ssl || !ssl->ssl) return PN_TLS_RESUME_UNKNOWN;
-  switch (SSL_session_reused( ssl->ssl )) {
-   case 0: return PN_TLS_RESUME_NEW;
-   case 1: return PN_TLS_RESUME_REUSED;
-   default: break;
-  }
-  return PN_TLS_RESUME_UNKNOWN;
 }
 
 int pn_tls_set_peer_hostname(pn_tls_t *ssl, const char *hostname)
@@ -1558,7 +1464,7 @@ static inline size_t size_min(uint32_t a, uint32_t b) {
   return (a <= b) ? a : b;
 }
 
-bool pn_tls_can_encrypt(pn_tls_t * tls) {
+bool pn_tls_is_secure(pn_tls_t * tls) {
   return tls->handshake_ok && !tls->pn_tls_err && !tls->stopped;
 }
 
@@ -2365,7 +2271,7 @@ static int pn_tls_alpn_cb(SSL *ssn,
   return SSL_TLSEXT_ERR_OK;;
 }
 
-int pn_tls_domain_set_alpn_protocols(pn_tls_domain_t *domain, const char **protocols, size_t protocol_count) {
+int pn_tls_config_set_alpn_protocols(pn_tls_config_t *domain, const char **protocols, size_t protocol_count) {
   unsigned char *wire_bytes;
   size_t wb_len;
   if (protocols == NULL && protocol_count == 0) {
