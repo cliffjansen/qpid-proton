@@ -1143,33 +1143,35 @@ int pn_tls_get_ssf(pn_tls_t *ssl)
   return 0;
 }
 
-bool pn_tls_get_cipher(pn_tls_t *ssl, char *buffer, size_t size )
+bool pn_tls_get_cipher(pn_tls_t *ssl, const char **cipher, size_t *size )
 {
   const SSL_CIPHER *c;
-
-  if (buffer && size) *buffer = '\0';
   if (ssl->ssl && (c = SSL_get_current_cipher( ssl->ssl ))) {
     const char *v = SSL_CIPHER_get_name(c);
-    if (buffer && v) {
-      snprintf( buffer, size, "%s", v );
+    if (v) {
+      *size = strlen(v);
+      *cipher = v;
       return true;
     }
   }
+  *cipher = NULL;
+  *size = 0;
   return false;
 }
 
-bool pn_tls_get_protocol_version(pn_tls_t *ssl, char *buffer, size_t size )
+bool pn_tls_get_protocol_version(pn_tls_t *ssl, const char **version, size_t *size )
 {
   const SSL_CIPHER *c;
-
-  if (buffer && size) *buffer = '\0';
   if (ssl->ssl && (c = SSL_get_current_cipher( ssl->ssl ))) {
     const char *v = SSL_CIPHER_get_version(c);
-    if (buffer && v) {
-      snprintf( buffer, size, "%s", v );
+    if (v) {
+      *size = strlen(v);
+      *version = v;
       return true;
     }
   }
+  *version = NULL;
+  *size = 0;
   return false;
 }
 
@@ -2295,16 +2297,18 @@ int pn_tls_config_set_alpn_protocols(pn_tls_config_t *domain, const char **proto
   // free on domain free, copy on ssl creation
 }
 
-bool pn_tls_get_alpn_protocol(pn_tls_t *tls, char *buffer, size_t size) {
-  const unsigned char *proto = NULL;
-  unsigned int proto_len = 0;
+bool pn_tls_get_alpn_protocol(pn_tls_t *tls, const char **protocol_name, size_t *size) {
   if (tls) {
+    const unsigned char *proto = NULL;
+    unsigned int proto_len = 0;
     SSL_get0_alpn_selected(tls->ssl, &proto, &proto_len);
-    if (proto_len && size > proto_len) {
-      memmove(buffer, proto, proto_len);
-      buffer[proto_len] = 0;
+    if (proto_len) {
+      *protocol_name = (const char *) proto;
+      *size = (size_t) proto_len;
       return true;
     }
   }
+  *protocol_name = NULL;
+  *size = 0;
   return false;
 }

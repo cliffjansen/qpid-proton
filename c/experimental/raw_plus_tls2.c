@@ -217,13 +217,13 @@ static void check_alpn(jabber_connection_t* jc) {
   const char *self = jc->is_server ? "server" : "client";
 
   if (!jc->alpn_protocol) {
-    char buf[256];  // max possible size including terminating null
-    if (pn_tls_get_alpn_protocol(jc->tls, buf, 256)) {
-      size_t l = strnlen(buf, 256);
-      assert(l > 0 && l < 256);
-      jc->alpn_protocol = (char *) malloc(l+1);
+    const char *protocol_name;
+    size_t len;
+    if (pn_tls_get_alpn_protocol(jc->tls, &protocol_name, &len)) {
+      jc->alpn_protocol = (char *) malloc(len+1);
       assert(jc->alpn_protocol);
-      memmove(jc->alpn_protocol, buf, l + 1);
+      memmove(jc->alpn_protocol, protocol_name, len);
+      jc->alpn_protocol[len] = 0;
       printf("**%s: using ALPN protocol %s\n", self, jc->alpn_protocol);
     } else {
       printf("**%s: no available ALPN protocol\n", self);

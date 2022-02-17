@@ -267,14 +267,14 @@ PN_TLS_EXTERN void pn_tls_free(pn_tls_t *tls);
  * Gets a text description of the cipher that is currently active, or
  * returns FALSE if TLS is not active (no cipher).  Note that the
  * cipher in use may change over time due to renegotiation or other
- * changes to the TLS state.
+ * changes to the TLS state.  The cipher is not null terminated.
  *
  * @param[in] tls the tls client/server to query.
- * @param[in,out] buffer buffer of size bytes to hold cipher name
- * @param[in] size maximum number of bytes in buffer.
- * @return True if cipher name written to buffer, False if no cipher in use.
+ * @param[out] cipher set to a pointer to the current cipher description or NULL if no cipher.
+ * @param[out] size set to the cipher or 0 if no cipher.
+ * @return True if cipher is non-null and size is not zero.
  */
-PN_TLS_EXTERN bool pn_tls_get_cipher(pn_tls_t *tls, char *buffer, size_t size);
+PN_TLS_EXTERN bool pn_tls_get_cipher(pn_tls_t *tls, const char **cipher, size_t *size);
 
 /**
  * Get the SSF (security strength factor) of the Cipher that is currently in use.
@@ -291,12 +291,12 @@ PN_TLS_EXTERN int pn_tls_get_ssf(pn_tls_t *tls);
  * is not active.  Note that the protocol may change over time due to renegotiation.
  *
  * @param[in] tls the tls client/server to query.
- * @param[in,out] buffer buffer of size bytes to hold the version identifier
- * @param[in] size maximum number of bytes in buffer.
- * @return True if the version information was written to buffer, False if TLS connection
+ * @param[out] version set to a pointer to the current protocol version or NULL if not active.
+ * @param[out] size set to the length of the version or zero if not active.
+ * @return True if version is non-null and size is not zero.
  * not ready.
  */
-PN_TLS_EXTERN bool pn_tls_get_protocol_version(pn_tls_t *tls, char *buffer, size_t size);
+PN_TLS_EXTERN bool pn_tls_get_protocol_version(pn_tls_t *tls, const char **version, size_t *size);
 
 /**
  * Set the expected identity of the remote peer.
@@ -525,15 +525,16 @@ PN_TLS_EXTERN int pn_tls_config_set_alpn_protocols(pn_tls_config_t *domain, cons
 /**
  * Get the name of the negotiated application protocol.
  *
- * Gets the name of the negotiated application protocol or
- * returns FALSE if the negotiation failed, is not yet complete, or not initiated by the client.
+ * Gets the name of the negotiated application protocol or returns FALSE if the negotiation
+ * failed, is not yet complete, or was never requested by the client.  The protocol name is not
+ * a null terminated string.
  *
  * @param[in] tls the tls client/server to query.
- * @param[in,out] buffer buffer of size bytes to hold the application protocol name.
- * @param[in] size maximum number of bytes in buffer.
- * @return True if the protocol name is written to buffer, False if no application protocol in use or the buffer is too small to hold the protocol name and null terminating byte.
+ * @param[out] protocol_name set to a pointer to the application protocol name or NULL if not negotiated.
+ * @param[out] size set to the length of the protocol name or zero if not negotiated.
+ * @return True if the protocol_name is non-null and size is not zero.
  */
-PN_TLS_EXTERN bool pn_tls_get_alpn_protocol(pn_tls_t *tls, char *buffer, size_t size);
+PN_TLS_EXTERN bool pn_tls_get_alpn_protocol(pn_tls_t *tls, const char **protocol_name, size_t *size);
 
 // TODO:  Tracing.  Session tickets.
 
