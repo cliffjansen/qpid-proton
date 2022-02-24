@@ -402,8 +402,8 @@ PN_TLS_EXTERN int pn_tls_get_cert_fingerprint(pn_tls_t *tls0,
  */
 PN_TLS_EXTERN const char* pn_tls_get_remote_subject_subfield(pn_tls_t *tls, pn_tls_cert_subject_subfield field);
 
-PN_TLS_EXTERN bool pn_tls_get_encrypt_output_pending(pn_tls_t *tls);
-PN_TLS_EXTERN bool pn_tls_get_decrypt_output_pending(pn_tls_t *tls);
+PN_TLS_EXTERN bool pn_tls_is_encrypt_output_pending(pn_tls_t *tls);
+PN_TLS_EXTERN bool pn_tls_is_decrypt_output_pending(pn_tls_t *tls);
 
 
 // True if peers have negotiated a TLS session.  False indicates handshake in progress or protocol error.
@@ -483,16 +483,16 @@ PN_TLS_EXTERN int pn_tls_stop(pn_tls_t* tls);
 
 // Confirms receipt of the peer's TLS closure record.  This confirms clean shutdown and
 // the absence of a truncation attack.
-PN_TLS_EXTERN bool pn_tls_read_closed(pn_tls_t* tls);
+PN_TLS_EXTERN bool pn_tls_is_input_closed(pn_tls_t* tls);
 
 // Closes the encrypt side and appends the TLS closure record to the pending encypted
 // output.  pn_tls_give_encrypt_input_buffers() will no longer take any supplied buffers.
-PN_TLS_EXTERN void pn_tls_write_close(pn_tls_t* tls);
+PN_TLS_EXTERN void pn_tls_close_output(pn_tls_t* tls);
 
 // If non-zero the TLS session was unable to start or was aborted.
 // The application should stop all read activity, and take all
 // remaining encrypted content and write it onto the connection
-// (i.e. until pn_tls_get_encrypt_output_pending() is false), then
+// (i.e. until pn_tls_is_encrypt_output_pending() is false), then
 // close the associated connection.  This will allow the error to be
 // propagated to the peer if expected by the TLS protocol.  Specific return values TBD (INIT_FAILED,
 // BAD_AUTH, TLS_PROTOCOL_ERROR, ...).

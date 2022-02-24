@@ -2160,7 +2160,7 @@ bool pn_tls_need_decrypt_output_buffers(pn_tls_t* tls) {
   return false;
 }
 
-bool pn_tls_get_encrypt_output_pending(pn_tls_t *tls)
+bool pn_tls_is_encrypt_output_pending(pn_tls_t *tls)
 {
   if (tls && tls->started && !tls->stopped) {
     if (!(tls->pn_tls_err && (tls->openssl_err_type == SSL_ERROR_SYSCALL || tls->openssl_err_type == SSL_ERROR_SSL)))
@@ -2169,7 +2169,7 @@ bool pn_tls_get_encrypt_output_pending(pn_tls_t *tls)
   return false;
 }
 
-bool pn_tls_get_decrypt_output_pending(pn_tls_t *tls)
+bool pn_tls_is_decrypt_output_pending(pn_tls_t *tls)
 {
   if (tls && tls->started && !tls->stopped &&!tls->dec_closed && !tls->pn_tls_err) {
     return tls->dresult_first_decrypted || (BIO_pending(tls->bio_ssl) > 0);
@@ -2191,11 +2191,11 @@ void pn_tls_set_decrypt_output_buffer_max_capacity(pn_tls_t *tls, size_t s) {
   if (!tls->started) tls->dresult_buffer_count = s;
 }
 
-bool pn_tls_read_closed(pn_tls_t* tls) {
+bool pn_tls_is_input_closed(pn_tls_t* tls) {
   return tls->dec_closed;
 }
 
-void pn_tls_write_close(pn_tls_t* tls) {
+void pn_tls_close_output(pn_tls_t* tls) {
   if (!tls->enc_closed) {
     tls->enc_closed = true;
   }

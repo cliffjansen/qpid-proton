@@ -111,7 +111,7 @@ TEST_CASE("handshake and data") {
   REQUIRE( rb_array[0].bytes == wire_bytes );
 
   /* server hello part1: server side */
-  REQUIRE( pn_tls_get_encrypt_output_pending(srv_tls) == true );
+  REQUIRE( pn_tls_is_encrypt_output_pending(srv_tls) == true );
   set_rbuf(&wire_buf, wire_bytes, sizeof(wire_bytes), 0);
   REQUIRE( pn_tls_give_encrypt_output_buffers(srv_tls, &wire_buf, 1) == 1 );
   REQUIRE( pn_tls_process(srv_tls) == 0 );
@@ -177,7 +177,7 @@ TEST_CASE("handshake and data") {
   REQUIRE( pn_tls_give_encrypt_input_buffers(srv_tls, &app_buf, 1) );
   set_rbuf(&wire_buf, wire_bytes, sizeof(wire_bytes), 0);
   REQUIRE( pn_tls_give_encrypt_output_buffers(srv_tls, &wire_buf, 1) == 1 );
-  pn_tls_write_close(srv_tls);  // Finished sending.
+  pn_tls_close_output(srv_tls);  // Finished sending.
   REQUIRE( pn_tls_process(srv_tls) == 0 );
   REQUIRE( pn_tls_take_encrypt_input_buffers(srv_tls, rb_array, 2) == 1 );
   REQUIRE( rb_array[0].bytes == app_bytes );
@@ -187,7 +187,7 @@ TEST_CASE("handshake and data") {
 
   /* client side: read server data and confirm end of TLS session */
 
-  REQUIRE( pn_tls_read_closed(cli_tls) == false );
+  REQUIRE( pn_tls_is_input_closed(cli_tls) == false );
   memset(app_bytes, 0, sizeof(app_bytes));
   set_rbuf(&app_buf, app_bytes, sizeof(app_bytes), 0);
   REQUIRE( pn_tls_give_decrypt_output_buffers(cli_tls, &app_buf, 1) == 1 );
@@ -200,10 +200,10 @@ TEST_CASE("handshake and data") {
   REQUIRE( rb_array[0].size == sizeof(srv_data) );
   REQUIRE( strncmp(rb_array[0].bytes, srv_data, sizeof(srv_data)) == 0 );
 
-  REQUIRE( pn_tls_read_closed(cli_tls) == true );
+  REQUIRE( pn_tls_is_input_closed(cli_tls) == true );
   set_rbuf(&wire_buf, wire_bytes, sizeof(wire_bytes), 0);
   REQUIRE( pn_tls_give_encrypt_output_buffers(cli_tls, &wire_buf, 1) == 1 );
-  pn_tls_write_close(cli_tls);  // Initiate symetric closure record
+  pn_tls_close_output(cli_tls);  // Initiate symetric closure record
   REQUIRE( pn_tls_process(cli_tls) == 0 );
   REQUIRE( pn_tls_take_encrypt_output_buffers(cli_tls, rb_array, 2) == 1 );
   REQUIRE( rb_array[0].bytes == wire_bytes );
@@ -211,11 +211,11 @@ TEST_CASE("handshake and data") {
   
   /* server side */
 
-  REQUIRE( pn_tls_read_closed(srv_tls) == false );
+  REQUIRE( pn_tls_is_input_closed(srv_tls) == false );
   REQUIRE( pn_tls_give_decrypt_input_buffers(srv_tls, rb_array, 1) == 1 );
   REQUIRE( pn_tls_process(srv_tls) == 0 );
   REQUIRE( pn_tls_take_decrypt_input_buffers(srv_tls, rb_array, 2) == 1 );
-  REQUIRE( pn_tls_read_closed(srv_tls) == false );
+  REQUIRE( pn_tls_is_input_closed(srv_tls) == false );
 
   /* clean up */
 
