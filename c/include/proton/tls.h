@@ -509,7 +509,7 @@ PN_TLS_EXTERN size_t pn_tls_get_session_error_string(pn_tls_t* tls, char *buf, s
  * terminated.  For the client, the order is preserved in the client_hello to the server, but
  * the server will not usually take that ordering into account.
  *
- * For the server, protocol selection follows the standard mechanism in RFC 7301: the first item in the server list that matches an item in the client list is selected.  ZZZ no match -> failed TLS.
+ * For the server, protocol selection follows the standard mechanism in RFC 7301: the first item in the server list that matches an item in the client list is selected.  No match will result in a failed TLS handshake.
  *
  * ALPN processing can be turned off by setting protocols to NULL and protocol_count to zero.
  *

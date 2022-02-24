@@ -69,7 +69,7 @@ TEST_CASE("handshake and data") {
   REQUIRE( server_config );
 
   REQUIRE( pn_tls_config_set_trusted_certs(client_config, CERTIFICATE("tserver")) == 0 );
-  REQUIRE(SET_CREDENTIALS(server_config, "tserver") == 0);  
+  REQUIRE(SET_CREDENTIALS(server_config, "tserver") == 0);
 
   pn_tls_t *cli_tls = pn_tls(client_config);
   pn_tls_set_peer_hostname(cli_tls, "test_server");
@@ -102,7 +102,7 @@ TEST_CASE("handshake and data") {
   REQUIRE( rb_array[0].size < sizeof(wire_bytes) );  // Strictly less expected.
 
   /* client hello part 2: server side */
-  
+
   REQUIRE( pn_tls_need_encrypt_output_buffers(srv_tls) == false );
   REQUIRE( pn_tls_give_decrypt_input_buffers(srv_tls, rb_array, 1) == 1 );
   REQUIRE( pn_tls_process(srv_tls) == 0 );
@@ -143,7 +143,7 @@ TEST_CASE("handshake and data") {
   memcpy(app_bytes, cli_data, len);
   app_buf.size = len;
   REQUIRE( pn_tls_give_encrypt_input_buffers(cli_tls, &app_buf, 1) );
-  
+
   REQUIRE( pn_tls_process(cli_tls) == 0 );
   REQUIRE( pn_tls_take_encrypt_input_buffers(cli_tls, rb_array, 2) == 1 );
   REQUIRE( rb_array[0].bytes == app_bytes );
@@ -157,7 +157,7 @@ TEST_CASE("handshake and data") {
   REQUIRE( pn_tls_process(srv_tls) == 0 );
   REQUIRE( pn_tls_is_secure(srv_tls) == true ); // Handshake complete at server
   REQUIRE( pn_tls_need_decrypt_output_buffers(srv_tls) == true ); // have client app data
-  
+
   memset(app_bytes, 0, sizeof(app_bytes));
   set_rbuf(&app_buf, app_bytes, sizeof(app_bytes), 0);
   REQUIRE( pn_tls_give_decrypt_output_buffers(srv_tls, &app_buf, 1) == 1 );
@@ -208,7 +208,7 @@ TEST_CASE("handshake and data") {
   REQUIRE( pn_tls_take_encrypt_output_buffers(cli_tls, rb_array, 2) == 1 );
   REQUIRE( rb_array[0].bytes == wire_bytes );
   REQUIRE( rb_array[0].size < sizeof(wire_bytes) );
-  
+
   /* server side */
 
   REQUIRE( pn_tls_is_input_closed(srv_tls) == false );

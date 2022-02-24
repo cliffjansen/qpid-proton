@@ -395,7 +395,7 @@ static void handle_incoming(jabber_connection_t* jc, bool rawc_input_closed_even
           rbuf_pool_return(&wire_buffers[buf_count-1]);
           buf_count -= 1;
         }
-          
+
         if (buf_count) {
           size_t consumed = pn_tls_give_decrypt_input_buffers(jc->tls, wire_buffers, buf_count);
           if (consumed != buf_count) {
@@ -405,7 +405,7 @@ static void handle_incoming(jabber_connection_t* jc, bool rawc_input_closed_even
             }
             else  // Should never happen if we counted correctly.
               printf("Decryption input buffer failure\n");
-            abort();  
+            abort();
           }
 
           if (!jabber_tls_process(jc))

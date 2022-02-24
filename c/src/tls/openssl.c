@@ -393,7 +393,7 @@ static void tls_fatal(pn_tls_t *tls, int ssl_err_type, int pn_tls_err) {
     tls->dec_rblocked = true;
     tls->dec_wblocked = true;
     tls->enc_closed = true;
-// ZZZ doc says do this:    if (ssl_err_type == SSL_ERROR_SYSCALL || ssl_err_type == SSL_ERROR_SSL) {
+    // TODO: recocile doc which says do this:    if (ssl_err_type == SSL_ERROR_SYSCALL || ssl_err_type == SSL_ERROR_SSL) {
     if (ssl_err_type == SSL_ERROR_SYSCALL) {
       // OpenSSL requires immediate halt
       tls->can_shutdown = false;
@@ -401,14 +401,14 @@ static void tls_fatal(pn_tls_t *tls, int ssl_err_type, int pn_tls_err) {
     } else {
       if (tls->enc_rblocked) {
         // Maybe new output generated.
-        ERR_clear_error(); // ZZZ  revisit need.
+        ERR_clear_error(); // TODO: revisit need.
         tls->enc_rblocked = (BIO_pending(tls->bio_net_io) == 0);
       }
     }
     if (ssl_err_type == SSL_ERROR_SYSCALL)
       tls->os_errno = errno;  // Save this in case it helps error reporting.
   } else {
-    // ZZZ handle subsequent error here
+    // TODO: handle a subsequent fatal error here.  Just log it?
   }
   // TODO: use tracing here to provide additional error info from the ERR_get_error error queue.
   //       Must be done here while in same thread as caller.
@@ -1847,7 +1847,7 @@ static pbuffer_t *next_encrypt_pending(pn_tls_t *tls) {
   p = tls->encrypt_first_pending;
   pbuffer_t *next = p ? &tls->encrypt_buffers[p-1] : NULL;
   assert(!next || next->type == buff_encrypt_pending);
-  
+
   return next;
 }
 
@@ -2018,14 +2018,14 @@ static void encrypt(pn_tls_t *tls) {
           ssl_log(NULL, PN_LEVEL_TRACE, "SSL connection has closed");
           // TODO: replacement for:       start_ssl_shutdown(transport);  // KAG: not sure - this may not be necessary
           tls->dec_closed = true;
-          tls->ssl_closed = true; // ZZZ revisit
+          tls->ssl_closed = true; // TODO: still true?
           break;
         default:
           tls_fatal(tls, reason, PN_TLS_PROTOCOL_ERR);
         }
-      }       
+      }
     }
-    
+
     // Done if output buffers exhausted or all available encrypted bytes drained from BIO.
     if (!curr_result || tls->enc_rblocked)
       break;
@@ -2101,7 +2101,7 @@ static void decrypt(pn_tls_t *tls) {
         }
       }
     }
-    
+
     // Done if outbufs exhausted or all inbufs decrypted
     if (!curr_result || tls->dec_rblocked || tls->dec_closed)
       break;
@@ -2222,13 +2222,13 @@ static bool strings_to_wire_list(const char **protocols, size_t protocol_count, 
 
 
 
-  // validated  
+  // validated
   *wire_bytes = (unsigned char *) malloc(total_len);
   if (!*wire_bytes) return true;
-  
+
   *wb_len = total_len;
   unsigned char *p = *wire_bytes;
-  
+
   for (size_t i = 0; i < protocol_count; i++) {
     l = strnlen(protocols[i], 255);
     *p++ = (unsigned char) l;
@@ -2259,7 +2259,6 @@ static int pn_tls_alpn_cb(SSL *ssn,
   unsigned char proto_outlen;
   if (SSL_select_next_proto(&proto_out, &proto_outlen, tls->alpn_list, tls->alpn_list_len, in, inlen)
       == OPENSSL_NPN_NO_OVERLAP) {
-    printf("ZZZ fatal time\n");
     return SSL_TLSEXT_ERR_ALERT_FATAL;
   }
 
@@ -2292,7 +2291,7 @@ int pn_tls_config_set_alpn_protocols(pn_tls_config_t *domain, const char **proto
   // Never turn off the callback in case outstanding TLS objects to be started.
   if (domain->alpn_list && domain->mode == PN_TLS_MODE_SERVER)
     SSL_CTX_set_alpn_select_cb(domain->ctx, pn_tls_alpn_cb, NULL);
-    
+
   return 0;
   // free on domain free, copy on ssl creation
 }
