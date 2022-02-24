@@ -41,6 +41,8 @@ extern "C" {
 /**
  * API for using TLS separate from AMQP connections.
  *
+ * This API is currently unsettled and subject to significant change and improvement.
+ *
  * Based heavily on the original Proton SSL API for configuring TLS over AMQP connections,
  * this implementation separates the encryption/decryption of data from the network IO
  * operations.
