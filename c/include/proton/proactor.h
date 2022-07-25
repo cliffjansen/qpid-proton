@@ -427,6 +427,9 @@ PNP_EXTERN void pn_proactor_raw_connect(pn_proactor_t *proactor, pn_raw_connecti
  * @}
  */
 
+/* Generate AMQP frames for current state of all sessions and links on the connection and start writing the frames to the socket.  Return without blocking. */
+PNP_EXTERN void pn_connection_write_pending(pn_connection_t *connection);
+
 #ifdef __cplusplus
 }
 #endif

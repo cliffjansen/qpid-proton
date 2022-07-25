@@ -1,0 +1,2 @@
+quiver.patch:
+  uses "seat of pants" heuristics to write_flush quiver wire data in smaller chunks"

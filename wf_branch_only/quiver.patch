@@ -1,0 +1,159 @@
+--- quiver/impls/quiver-arrow-qpid-proton-c.c.cj0	2022-07-22 09:27:41.517953013 -0700
++++ quiver/impls/quiver-arrow-qpid-proton-c.c	2022-07-25 10:20:55.367518898 -0700
+@@ -86,6 +86,16 @@
+     size_t received;
+     size_t acknowledged;
+     pn_ssl_domain_t *ssl_domain;
++
++    size_t bytes_per_msg;
++    size_t bytes_in_flight;
++    size_t sender_lwm;
++    size_t sender_hwm;
++    bool sender_paused;
++    size_t bytes_unacked;
++    size_t msgs_unacked;
++    size_t bytes_unacked_limit; // max bytes read or written without flush
++    size_t msgs_unacked_limit;
+ };
+ 
+ void fail_(const char* file, int line, const char* fmt, ...) {
+@@ -233,6 +243,8 @@
+ 
+     size_t size = encode_message(a->message, &a->buffer);
+     ASSERT(size > 0);
++    if (!a->bytes_per_msg)
++        a->bytes_per_msg = size; // a crude estimate of wire bytes for fixed size messages
+ 
+     // Use id as unique delivery tag
+     pn_delivery(l, pn_dtag((const char*)&a->sent, sizeof(a->sent)));
+@@ -246,6 +258,31 @@
+     printf("%" PRId64 ",0\n", stime);
+ }
+ 
++static void try_sending(struct arrow* a, pn_event_t* e) {
++    pn_link_t* link = pn_event_link(e);
++
++    size_t tp_pending = 0;
++    if (pn_link_is_sender(link)) {
++        while (pn_link_credit(link) > 0) {
++            if (a->desired_count > 0 && a->sent == a->desired_count) {
++                break;
++            }
++            if (a->sender_paused || a->bytes_in_flight >= a->sender_hwm) { // TODO: instrument HWM
++                a->sender_paused = true;
++                break;
++            }
++            send_message(a, link);
++            a->bytes_in_flight += a->bytes_per_msg;
++            tp_pending += a->bytes_per_msg;
++            if (tp_pending > a->bytes_unacked_limit) {  // TODO: instrument
++                tp_pending = 0;
++                pn_connection_write_pending(pn_event_connection(e));
++            }
++        }
++    }
++}
++
++
+ static void fail_if_condition(pn_event_t* e, pn_condition_t* cond) {
+     if (pn_condition_is_set(cond)) {
+         FAIL("%s: %s: %s", pn_event_type_name(pn_event_type(e)),
+@@ -343,18 +380,7 @@
+         break;
+     }
+     case PN_LINK_FLOW: {
+-        pn_link_t* link = pn_event_link(e);
+-
+-        if (pn_link_is_sender(link)) {
+-            while (pn_link_credit(link) > 0) {
+-                if (a->desired_count > 0 && a->sent == a->desired_count) {
+-                    break;
+-                }
+-
+-                send_message(a, link);
+-            }
+-        }
+-
++        try_sending(a, e);
+         break;
+     }
+     case PN_DELIVERY: {
+@@ -367,11 +393,15 @@
+             pn_delivery_settle(delivery);
+ 
+             a->acknowledged++;
+-
+             if (a->acknowledged == a->desired_count) {
+                 stop(a);
+                 break;
+             }
++            a->bytes_in_flight -= a->bytes_per_msg;
++            if (a->sender_paused && a->bytes_in_flight < a->sender_lwm) {
++                a->sender_paused = false;
++                try_sending(a, e);
++            }
+         } else if (pn_link_is_receiver(link)) {
+             if (!pn_delivery_readable(delivery) || pn_delivery_partial(delivery)) {
+                 break;
+@@ -379,6 +409,9 @@
+ 
+             // Message received
+ 
++            if (!a->bytes_per_msg)
++                a->bytes_per_msg = pn_delivery_pending(delivery); // a crude estimate of wire bytes for fixed size messages
++
+             decode_message(a->message, delivery, &a->buffer);
+             process_message(a, a->message);
+ 
+@@ -393,6 +426,13 @@
+             }
+ 
+             pn_link_flow(link, a->credit_window - pn_link_credit(link));
++            a->bytes_unacked += a->bytes_per_msg;
++            a->msgs_unacked += 1;
++            if (a->msgs_unacked > a->msgs_unacked_limit || a->bytes_unacked > a->bytes_unacked_limit) {
++                a->msgs_unacked = 0;
++                a->bytes_unacked = 0;
++                pn_connection_write_pending(pn_event_connection(e));
++            }
+         } else {
+             FAIL("Unexpected");
+         }
+@@ -467,10 +507,25 @@
+             }
+         }
+ 
++        a->msgs_unacked = 0;
++        a->bytes_unacked = 0;
++
+         pn_proactor_done(a->proactor, events);
+     }
+ }
+ 
++size_t envcheck(const char* env_name, size_t default_value) {
++    const char* env_value = getenv(env_name);
++    if (env_value) {
++        int v = atoi(env_value);
++        if (v > 0 && v < (100 * 1024 *1024))
++            return (size_t) v;
++        else
++            FAIL("Error bad environment value: %s %s", env_name, env_value);
++    }
++    return default_value;
++}
++
+ int token(const char* names[], const char* name) {
+     size_t i = 0;
+     for (; names[i] && strcmp(names[i], name); i++)
+@@ -535,6 +590,11 @@
+     }
+     a.tls = strcmp(a.scheme, "amqps") == 0;
+ 
++    a.sender_lwm = envcheck("QVRSHWM", 131072);
++    a.sender_hwm = envcheck("QVRSLWM", 65536);
++    a.bytes_unacked_limit = envcheck("QVRUBYTES", 12288);
++    a.msgs_unacked_limit = envcheck("QVRUMSGS", 100);
++
+     // Set up the fixed parts of the message
+     a.message = pn_message();
+     pn_message_set_durable(a.message, a.durable);
