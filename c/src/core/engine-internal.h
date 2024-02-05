@@ -259,13 +259,18 @@ struct pn_session_t {
   pn_list_t *links;
   pn_list_t *freed;
   pn_record_t *context;
-  size_t incoming_capacity;
   uint32_t local_handle_max;
   pn_sequence_t incoming_bytes;
   pn_sequence_t outgoing_bytes;
   pn_sequence_t incoming_deliveries;
   pn_sequence_t outgoing_deliveries;
   pn_sequence_t outgoing_window;
+  pn_frame_count_t incoming_window_lwm;
+  pn_frame_count_t incoming_window;
+  bool check_flow;
+  bool need_flow;
+  bool lwm_default;
+  size_t incoming_capacity;
 };
 
 struct pn_terminus_t {
@@ -380,6 +385,7 @@ void pn_ep_incref(pn_endpoint_t *endpoint);
 void pn_ep_decref(pn_endpoint_t *endpoint);
 
 ssize_t pni_transport_grow_capacity(pn_transport_t *transport, size_t n);
+  void pni_session_update_incoming_lwm(pn_session_t *ssn);
 
 #if __cplusplus
 }

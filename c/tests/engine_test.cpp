@@ -22,6 +22,7 @@
 #include "./pn_test.hpp"
 
 #include <proton/engine.h>
+#include <cstring>
 
 using namespace pn_test;
 
@@ -357,6 +358,162 @@ TEST_CASE("link_properties)") {
 
   REQUIRE(pn_link_remote_properties(tx) != NULL);
   CHECK("{\"foo\"=[1, 987, 3], \"bar\"=965}" == pn_test::inspect(pn_link_remote_properties(tx)));
+
+  pn_transport_unbind(t1);
+  pn_transport_free(t1);
+  pn_connection_free(c1);
+
+  pn_transport_unbind(t2);
+  pn_transport_free(t2);
+  pn_connection_free(c2);
+}
+
+static ssize_t link_send(pn_link_t *s, size_t n) {
+  char buf[5120];
+  if (n > 5120) return PN_ARG_ERR;
+  memset(buf, 'x', n);
+  return pn_link_send(s, buf, n);
+}
+
+static ssize_t link_recv(pn_link_t *r, size_t n) {
+  char buf[5120];
+  if (n > 5120) return PN_ARG_ERR;
+  return pn_link_recv(r, buf, n);
+}
+
+TEST_CASE("session_flow") {
+  pn_connection_t *c1 = pn_connection();
+  pn_transport_t *t1 = pn_transport();
+  pn_transport_bind(t1, c1);
+
+  pn_connection_t *c2 = pn_connection();
+  pn_transport_t *t2 = pn_transport();
+  pn_transport_set_server(t2);
+  // Use 1K max frame size for test.
+  pn_transport_set_max_frame(t2, 1024);
+  pn_transport_bind(t2, c2);
+
+  pn_connection_open(c1);
+  pn_connection_open(c2);
+
+  pn_session_t *s1 = pn_session(c1);
+  pn_session_open(s1);
+  REQUIRE(pn_session_get_incoming_capacity(s1) == 0);
+  REQUIRE(pn_session_get_incoming_window(s1) == 0);
+  REQUIRE(pn_session_get_incoming_window_lwm(s1) == 0);
+  
+  pn_link_t *tx = pn_sender(s1, "tx");
+  pn_link_open(tx);
+
+  while (pump(t1, t2)) {
+    process_endpoints(c1);
+    process_endpoints(c2);
+  }
+
+  // session and link should be up, c2 should have a receiver link:
+  REQUIRE(pn_link_state(tx) == (PN_LOCAL_ACTIVE | PN_REMOTE_ACTIVE));
+  pn_session_t *s2 = pn_session_head(c2, (PN_LOCAL_ACTIVE | PN_REMOTE_ACTIVE));
+  pn_link_t *rx = pn_link_head(c2, (PN_LOCAL_ACTIVE | PN_REMOTE_ACTIVE));
+  REQUIRE(s2 != NULL);
+  REQUIRE(rx != NULL);
+
+  REQUIRE(pn_session_get_incoming_capacity(s2) == 0);
+  REQUIRE(pn_session_get_incoming_window(s2) == 0);
+  REQUIRE(pn_session_get_incoming_window_lwm(s2) == 0);
+
+  pn_link_flow(rx, 1);
+  pn_session_set_incoming_capacity(s2, 10240);
+  REQUIRE(pn_session_get_incoming_capacity(s2) == 10240);
+  while (pump(t1, t2));
+  REQUIRE(pn_session_remote_incoming_window(s1) == 10);
+
+  // Don't count partial max frame.
+  pn_session_set_incoming_capacity(s2, 5120 + 1);
+  while (pump(t1, t2));
+  REQUIRE(pn_session_remote_incoming_window(s1) == 5);
+
+  // default lwm
+  pn_session_set_incoming_window_and_lwm(s2, 4, 0);
+  REQUIRE(pn_session_get_incoming_window(s2) == 4);
+  REQUIRE(pn_session_get_incoming_window_lwm(s2) == 0);
+  REQUIRE(pn_session_get_incoming_capacity(s2) == 0);
+  while (pump(t1, t2));
+  REQUIRE(pn_session_remote_incoming_window(s1) == 4);
+
+  // Send frames and check window.
+
+  // This is complicated by messy accounting: max_frame_size is a proxy for frames buffered on the
+  // receiver side, but payload per transfer frame is strictly less than max frame size due to
+  // frame headers.  For this test 997 bytes of payload fits in a 1024 byte transfer frame.
+  // Senders and receivers count/update frames a bit differently.
+
+  size_t payloadsz = 997;
+  size_t onefrm = 1 * payloadsz;
+  size_t fourfrm = 4 * payloadsz;
+  size_t fivefrm = 5 * payloadsz;
+
+  REQUIRE(pn_link_credit(tx) > 0);
+  pn_delivery_t *d1 = pn_delivery(tx, pn_dtag("tag-1", 6));
+  REQUIRE(link_send(tx, fivefrm) == (ssize_t) fivefrm);
+  while (pump(t1, t2));
+  // Expect 4 frames sent and 1 remaining, window 0
+  pn_delivery_t *d2 = pn_link_current(rx);
+  REQUIRE(d2);
+  REQUIRE(pn_delivery_pending(d2) == fourfrm);
+  REQUIRE(pn_delivery_partial(d2));
+  REQUIRE(pn_delivery_pending(d1) == onefrm);
+  REQUIRE(pn_session_remote_incoming_window(s1) == 0);
+
+  // Extract 3 frames, tx can send remaining bytes in one frame.
+  REQUIRE(link_recv(rx, 3072) == 3072);
+  while (pump(t1, t2));
+  // Window should be 2
+  REQUIRE(pn_delivery_pending(d1) == 0);
+  REQUIRE(pn_session_remote_incoming_window(s1) == 2);
+
+  // Confirm lwm is 2.  Increase window but should not be communicated to peer
+  int remaining = pn_delivery_pending(d2);
+  REQUIRE(link_recv(rx, 5120) == remaining);
+  while (pump(t1, t2));
+  // Window should still be 2, no flow frame
+  REQUIRE(pn_session_remote_incoming_window(s1) == 2);
+
+  // Decrease window by 1, to below lwm
+  REQUIRE(link_send(tx, onefrm) == (ssize_t) onefrm);
+  REQUIRE(xfer(t1,t2) > 0);
+  REQUIRE(pn_session_remote_incoming_window(s1) == 1);
+  remaining = pn_delivery_pending(d2);
+  REQUIRE(link_recv(rx, 5120) == remaining);
+  while (pump(t1, t2));
+  // Flow frame received by t1
+  REQUIRE(pn_session_remote_incoming_window(s1) == 4);
+
+  // User specified lwm:
+  pn_session_set_incoming_window_and_lwm(s2, 5, 4);
+  REQUIRE(pn_session_get_incoming_window(s2) == 5);
+  REQUIRE(pn_session_get_incoming_window_lwm(s2) == 4);
+  REQUIRE(pn_session_get_incoming_capacity(s2) == 0);
+  while (pump(t1, t2));
+  REQUIRE(pn_session_remote_incoming_window(s1) == 5);
+
+  REQUIRE(link_send(tx, onefrm) == (ssize_t) onefrm);
+  REQUIRE(xfer(t1,t2) > 0);
+  REQUIRE(pn_session_remote_incoming_window(s1) == 4);
+  remaining = pn_delivery_pending(d2);
+  REQUIRE(link_recv(rx, 5120) == remaining);
+  while (pump(t1, t2));
+  // No flow frame.
+  REQUIRE(pn_session_remote_incoming_window(s1) == 4);
+
+  // Decrease window by 1, to below lwm
+  REQUIRE(link_send(tx, onefrm) == (ssize_t) onefrm);
+  REQUIRE(xfer(t1,t2) > 0);
+  REQUIRE(pn_session_remote_incoming_window(s1) == 3);
+  remaining = pn_delivery_pending(d2);
+  REQUIRE(link_recv(rx, 5120) == remaining);
+  while (pump(t1, t2));
+  // Flow frame received by t1
+  REQUIRE(pn_session_remote_incoming_window(s1) == 5);
 
   pn_transport_unbind(t1);
   pn_transport_free(t1);
