@@ -48,6 +48,7 @@ from cproton import PN_CONFIGURATION, PN_COORDINATOR, PN_DELIVERIES, PN_DIST_MOD
     pn_session_attachments, pn_session_close, pn_session_condition, pn_session_connection, pn_session_free, \
     pn_session_get_incoming_capacity, pn_session_get_outgoing_window, pn_session_head, pn_session_incoming_bytes, \
     pn_session_next, pn_session_open, pn_session_outgoing_bytes, pn_session_remote_condition, \
+    pn_session_incoming_window, pn_session_incoming_window_lwm, pn_session_set_incoming_window_and_lwm, \
     pn_session_set_incoming_capacity, pn_session_set_outgoing_window, pn_session_state, pn_terminus_capabilities, \
     pn_terminus_copy, pn_terminus_filter, pn_terminus_get_address, pn_terminus_get_distribution_mode, \
     pn_terminus_get_durability, pn_terminus_get_expiry_policy, pn_terminus_get_timeout, pn_terminus_get_type, \

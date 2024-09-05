@@ -142,6 +142,7 @@ typedef enum
 typedef struct pn_sasl_t pn_sasl_t;
 typedef uint32_t pn_seconds_t;
 typedef uint32_t pn_sequence_t;
+typedef uint32_t pn_frame_count_t;
 typedef struct pn_session_t pn_session_t;
 typedef enum 
 {
@@ -548,6 +549,9 @@ pn_condition_t *pn_session_remote_condition(pn_session_t *session);
 void pn_session_set_incoming_capacity(pn_session_t *session, size_t capacity);
 void pn_session_set_outgoing_window(pn_session_t *session, size_t window);
 pn_state_t pn_session_state(pn_session_t *session);
+pn_frame_count_t pn_session_incoming_window(pn_session_t *session);
+pn_frame_count_t pn_session_incoming_window_lwm(pn_session_t *session);
+int pn_session_set_incoming_window_and_lwm(pn_session_t *session, pn_frame_count_t window, pn_frame_count_t lwm);
 
 pn_ssl_t *pn_ssl(pn_transport_t *transport);
 pn_ssl_domain_t *pn_ssl_domain(pn_ssl_mode_t mode);
