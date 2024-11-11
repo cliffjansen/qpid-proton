@@ -51,7 +51,7 @@
 #include <openssl/err.h>
 #include <openssl/x509v3.h>
 
-#if OPENSSL_VERSION_PREREQ(3, 0)
+#if (OPENSSL_VERSION_NUMBER >= 0x30000000L)
 #include <openssl/provider.h>
 #include <openssl/store.h>
 #include <openssl/ui.h>
@@ -618,7 +618,7 @@ void pn_ssl_domain_free( pn_ssl_domain_t *domain )
   }
 }
 
-#if OPENSSL_VERSION_PREREQ(3, 0)
+#if (OPENSSL_VERSION_NUMBER >= 0x30000000L)
 static int ui_read_string(UI *ui, UI_STRING *uis)
 {
     return UI_set_result(ui, uis, UI_get0_user_data(ui));
@@ -679,11 +679,11 @@ static EVP_PKEY *read_private_key_pkcs11( const char *uri, const char *key_pass 
 #else /* < OpenSSL 3.0 */
 static X509 *read_certificate_pkcs11( const char *uri, const char *key_pass ) {
   ssl_log_error("pkcs11: URI support requires >= OpenSSL 3.0\n");
-  return NULL
+  return NULL;
 }
 static EVP_PKEY *read_private_key_pkcs11( const char *uri, const char *key_pass ) {
   ssl_log_error("pkcs11: URI support requires >= OpenSSL 3.0\n");
-  return NULL
+  return NULL;
 }
 #endif
 
