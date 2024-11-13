@@ -641,6 +641,7 @@ static OSSL_STORE_INFO *pkcs11_provider_get_info( const char *uri, const char *p
                                              ui_method, (void *)pin, NULL, NULL, NULL);
   if (!store) {
     ssl_log_error("Failed to open store for provider=pkcs11\n");
+    UI_destroy_method(ui_method);
     return NULL;
   }
 
@@ -648,12 +649,14 @@ static OSSL_STORE_INFO *pkcs11_provider_get_info( const char *uri, const char *p
        info = OSSL_STORE_load(store)) {
     if (type == OSSL_STORE_INFO_get_type(info)) {
       OSSL_STORE_close(store);
+      UI_destroy_method(ui_method);
       return info;
     }
     OSSL_STORE_INFO_free(info);
   }
 
   OSSL_STORE_close(store);
+  UI_destroy_method(ui_method);
   return NULL;
 }
 
